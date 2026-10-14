@@ -310,6 +310,18 @@ Use:
 * Setting `useHeat` (default true). Evaluation (test/detect-heat.test.js, fixtures/pbp.json): full density unchanged
   (6/6, 0 false); 1/10 density 6/6 with heat (5–6/6 without); 1/20 density 3–5/6 (1–3/6 without); 0 false auto-skips.
 
+### 7.6 Skip the ad playing now — `BAS.findAdEnd` (35-skip-here.js)
+
+For ads the detectors missed. The viewer presses the control-bar ⏭ button (`.bas-ctrl-skip`, first child of
+`.bpx-player-control-bottom-right`, setting `skipHereButton`) or the popup button (`BAS_SKIP_HERE`). Only the END is
+needed, and weak evidence is acceptable because a human confirmed the ad. Order of trust: an existing segment/candidate
+covering now (any confidence, incl. ignored/dropped) → ≥ 2 agreeing 空降 targets posted in [t−150, t+60] → landing-marker
+cluster after now → heat ramp containing now (its peak end; a second press past the middle jumps half a sample further)
+→ a single target → next chapter boundary → +30 s. Danmaku are loaded on demand when results came from the cache.
+The toast offers 撤销 (seek back) and 记住 (store `[start estimate, end]` as a user segment). Measured: presses early /
+mid / late in the 7 ads land within 10 s every time (16/21 within 3 s) at full density; with 1/10 of the danmaku 18/21
+within 3 s; with heat only ±17 s.
+
 ## 8. Skipper — `new BAS.Skipper(video, opts)`
 
 `opts = { getSegments: () => Segment[], getSettings: () => settings, onSkip(seg, from), onEnter(seg), onLeave(seg) }`

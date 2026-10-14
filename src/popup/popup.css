@@ -126,6 +126,7 @@ button:disabled { opacity: .5; cursor: default; }
 /* manual */
 .manual { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
 .manual-row { display: flex; gap: 6px; }
+.manual-row + .manual-row { margin-top: 6px; }
 .manual-row .btn { flex: 1; }
 .manual-row .btn.ghost { flex: 0 0 auto; }
 .manual-hint { color: var(--fg2); font-size: 11px; margin-top: 4px; }

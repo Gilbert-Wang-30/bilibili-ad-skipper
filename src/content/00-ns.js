@@ -2,7 +2,7 @@
 (() => {
   if (globalThis.BAS && globalThis.BAS.__loaded) return;
 
-  const VERSION = '0.2.0';
+  const VERSION = '0.3.0';
 
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
@@ -13,6 +13,7 @@
     useMedia: true,
     useAudio: false,
     useHeat: true,
+    skipHereButton: true,   // control-bar button to skip an ad the detectors missed
     showMarkers: true,
     showToast: true,
     toastDurationMs: 6000,

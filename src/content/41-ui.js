@@ -175,6 +175,33 @@
     if (st.layer.parentNode !== area) area.appendChild(st.layer);
   }
 
+  // ---------- control-bar button: skip the ad that is playing now (for ads that were not detected) ----------
+  const SKIP_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">' +
+    '<path fill="currentColor" d="M5 6.2v11.6c0 .7.8 1.1 1.4.7l7.6-5.8c.5-.4.5-1.1 0-1.4L6.4 5.5C5.8 5.1 5 5.5 5 6.2z"/>' +
+    '<rect fill="currentColor" x="16" y="5.5" width="2.6" height="13" rx="1.2"/></svg>';
+  function buildCtrlButton() {
+    const btn = el('button', 'bas-ctrl-skip', { type: 'button', 'aria-label': '跳过正在播放的广告', title: '跳过正在播放的广告（漏检时使用）' });
+    btn.innerHTML = SKIP_ICON;   // static markup, no user data
+    guardButton(btn);
+    btn.addEventListener('click', () => {
+      try { if (typeof st.ctrlHandler === 'function') st.ctrlHandler(); } catch (e) { BAS.warn('skip-here handler', e); }
+    });
+    st.ctrlBtn = btn;
+  }
+  function ensureCtrlButton() {
+    if (!st.ctrlHandler || !st.container) { if (st.ctrlBtn) remove(st.ctrlBtn); return; }
+    const host = st.container.querySelector('.bpx-player-control-bottom-right');
+    if (!host) return;
+    if (!st.ctrlBtn) buildCtrlButton();
+    if (st.ctrlBtn.parentNode !== host) host.insertBefore(st.ctrlBtn, host.firstChild);
+  }
+  /** Show (opts = {onClick}) or remove (null) the control-bar skip button. Survives control-bar re-renders via refresh(). */
+  function setSkipHereButton(opts) {
+    st.ctrlHandler = opts && typeof opts.onClick === 'function' ? opts.onClick : null;
+    if (!hasDOM()) return;
+    try { if (st.container) ensureCtrlButton(); else if (st.ctrlHandler) mount(); } catch (e) { BAS.warn('ui.setSkipHereButton', e); }
+  }
+
   // ---------- markers ----------
   function markerHosts() {
     if (!st.container) return [];
@@ -303,6 +330,7 @@
       }
       ensureLayer(c);
       ensureMarkerHosts();
+      ensureCtrlButton();
       return true;
     } catch (e) {
       BAS.warn('ui.mount failed', e);
@@ -369,11 +397,14 @@
 
       const rec = { el: toast, timer: null, remaining: 0, startedAt: 0, raf: null, closed: false };
 
-      if (opts.actionLabel) {
-        const btn = el('button', 'bas-toast__btn', { type: 'button', text: String(opts.actionLabel) });
+      const actions = Array.isArray(opts.actions) ? opts.actions.filter((a) => a && a.label).slice(0, 3)
+        : (opts.actionLabel ? [{ label: opts.actionLabel, onAction: opts.onAction }] : []);
+      for (const a of actions) {
+        const btn = el('button', 'bas-toast__btn', { type: 'button', text: String(a.label) });
+        if (a.title) btn.title = String(a.title);
         guardButton(btn);
         btn.addEventListener('click', () => {
-          try { if (typeof opts.onAction === 'function') opts.onAction(); } catch (e) { BAS.warn('toast action', e); }
+          try { if (typeof a.onAction === 'function') a.onAction(); } catch (e) { BAS.warn('toast action', e); }
           closeToast(rec);
         });
         toast.appendChild(btn);
@@ -464,7 +495,7 @@
         const roots = [];
         if (st.container) roots.push(st.container);
         roots.push(document);
-        for (const r of roots) for (const n of findAll(r, '.bas-markers, .bas-layer')) remove(n);
+        for (const r of roots) for (const n of findAll(r, '.bas-markers, .bas-layer, .bas-ctrl-skip')) remove(n);
       }
     } catch (e) {
       BAS.warn('ui.destroy', e);
@@ -473,6 +504,7 @@
     st.layer = null; st.toastHost = null;
     st.skip = null; st.skipLabel = null; st.skipSub = null; st.skipHandler = null; st.skipOpts = null;
     st.badge = null; st.badgeNum = null; st.badgeCount = 0;
+    st.ctrlBtn = null; st.ctrlHandler = null;
     st.segments = []; st.duration = 0;
   }
 
@@ -487,6 +519,7 @@
     dismissToasts,
     showSkipButton,
     hideSkipButton,
+    setSkipHereButton,
     setBadge,
     isMounted,
     destroy,

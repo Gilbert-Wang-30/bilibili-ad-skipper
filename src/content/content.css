@@ -300,3 +300,25 @@
     transition: none;
   }
 }
+
+/* ---------- control-bar button: skip the ad playing now (manual, for missed ads) ---------- */
+.bas-ctrl-skip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #fff;
+  opacity: .9;
+  cursor: pointer;
+  line-height: 0;
+}
+.bas-ctrl-skip:hover { opacity: 1; color: #fb7299; }
+.bas-ctrl-skip:focus-visible { outline: 2px solid #fb7299; outline-offset: 1px; border-radius: 4px; }
+.bas-toast__btn + .bas-toast__btn { margin-left: 4px; }

@@ -11,6 +11,7 @@ const PURE_MODULES = [
   '30-detect-chapters.js',
   '31-detect-danmaku.js',
   '34-detect-heat.js',
+  '35-skip-here.js',
   '33-fusion.js',
   '40-skipper.js',
 ];

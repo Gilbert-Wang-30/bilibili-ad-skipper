@@ -136,7 +136,9 @@
       const bars = c.querySelectorAll('.bpx-player-progress, .bpx-player-shadow-progress-area');
       let barsOk = true;
       for (const b of bars) if (!b.querySelector(':scope > .bas-markers')) { barsOk = false; break; }
-      if (!layerOk || !barsOk) { BAS.ui.refresh && BAS.ui.refresh(); renderMarkers(); }
+      const ctrlHost = c.querySelector('.bpx-player-control-bottom-right');
+      const ctrlOk = !skipHereWanted() || !ctrlHost || !!ctrlHost.querySelector(':scope > .bas-ctrl-skip');
+      if (!layerOk || !barsOk || !ctrlOk) { BAS.ui.refresh && BAS.ui.refresh(); renderMarkers(); }
     } catch (e) { BAS.debug('ui health check failed', e); }
   }
 
@@ -171,6 +173,60 @@
   }
   function onLeave() { try { BAS.ui && BAS.ui.hideSkipButton(); } catch (e) { /* ignore */ } }
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+  // ---------------------------------------------------------------- manual skip (ads the detectors missed)
+  let skipHereBusy = false;
+  /** The viewer says an ad is playing now: find its end from every available signal and jump there. */
+  async function skipHere() {
+    const v = state.videoEl, info = state.video;
+    if (!v || !info || skipHereBusy || !BAS.findAdEnd) return null;
+    let t;
+    try { t = v.currentTime; } catch (e) { return null; }
+    if (!isFinite(t)) return null;
+    skipHereBusy = true;
+    try {
+      let list = state.lastDanmaku && state.lastDanmaku.cid === info.cid ? state.lastDanmaku.list : null;
+      if (!list) {
+        // results came from the cache (or danmaku analysis is off): load the danmaku now
+        const wait = BAS.ui ? BAS.ui.showToast({ text: '正在查找广告结尾…', durationMs: 8000, force: true }) : null;
+        try { list = await BAS.api.getDanmaku(info.aid, info.cid, info.duration, {}); state.lastDanmaku = { cid: info.cid, list }; }
+        catch (e) { BAS.debug('skip-here: danmaku unavailable', e); list = []; }
+        if (wait) wait.close();
+        if (!state.video || state.video.cid !== info.cid) return null;
+      }
+      const r = BAS.findAdEnd({
+        t, duration: info.duration || (isFinite(v.duration) ? v.duration : 0), danmaku: list, heat: state.heatAnalysis,
+        boundaries: state.boundaries, candidates: [].concat(state.segments, state.dropped, state.candidates),
+      });
+      if (!r) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
+      try { v.currentTime = r.end; } catch (e) { return null; }
+      BAS.log('skip-here', fmtTime(t), '->', fmtTime(r.end), r.source);
+      const actions = [{ label: '撤销', onAction: () => { try { v.currentTime = t; } catch (e) { /* ignore */ } } }];
+      if (r.source === 'fallback') {
+        actions.push({ label: '再前进', title: '广告还没结束？继续查找结尾', onAction: () => { skipHere(); } });
+      } else {
+        actions.push({
+          label: '记住', title: '把这段标记为广告，下次自动跳过',
+          onAction: () => {
+            if (!state.video || state.video.cid !== info.cid) return;
+            BAS.storage.addUser(info.bvid, info.cid, { start: r.start, end: r.end }).then(reloadOverrides).catch(() => {});
+          },
+        });
+      }
+      if (BAS.ui) {
+        BAS.ui.showToast({
+          html: `<b>已跳过</b> ${fmtTime(t)} → ${fmtTime(r.end)}<span class="bas-toast-sub">依据：${escapeHtml(r.reason)}</span>`,
+          actions, durationMs: Math.max(8000, settings().toastDurationMs || 0), force: true,
+        });
+      }
+      return r;
+    } finally { skipHereBusy = false; }
+  }
+  function skipHereWanted() { const s = settings(); return !!(s.enabled && s.skipHereButton !== false && state.video); }
+  function syncSkipHereButton() {
+    if (!BAS.ui || !BAS.ui.setSkipHereButton) return;
+    try { BAS.ui.setSkipHereButton(skipHereWanted() ? { onClick: skipHere } : null); } catch (e) { /* ignore */ }
+  }
 
   // ---------------------------------------------------------------- skipper / media lifecycle
   function ensureSkipper(videoEl) {
@@ -446,9 +502,11 @@
         if (info) {
           state.lastKey = key;
           BAS.log('video', info.bvid, 'cid', info.cid, 'p', info.p);
+          state.video = info;
+          syncSkipHereButton();
           detect(info).catch((e) => { BAS.warn('detect failed', e); state.status = 'error'; state.error = String(e && e.message || e); });
         } else if (!parseUrlIdentity()) {
-          state.lastKey = null; state.video = null; state.segments = []; clearUi();
+          state.lastKey = null; state.video = null; state.segments = []; clearUi(); syncSkipHereButton();
         }
       } else if (info && state.video && info.duration && !state.video.duration) {
         state.video.duration = info.duration;
@@ -528,6 +586,11 @@
           }
           done(); return false;
         }
+        case 'BAS_SKIP_HERE': {
+          // reply at once; loading danmaku can take longer than the popup waits
+          if (v) skipHere().catch(() => {});
+          done(); return false;
+        }
         case 'BAS_RESCAN': {
           // Reply right away (status 'loading'); the popup polls for the result.
           if (v) {
@@ -565,6 +628,7 @@
     let prev = {}; try { prev = JSON.parse(prevJson); } catch (e) { /* ignore */ }
     const changed = (k) => JSON.stringify(prev[k]) !== JSON.stringify(next[k]);
 
+    if (changed('enabled') || changed('skipHereButton')) syncSkipHereButton();
     if (changed('enabled') && !next.enabled) {
       abortDetection();
       state.status = 'disabled'; state.segments = []; clearUi(); sendBadge(0); destroyMedia();

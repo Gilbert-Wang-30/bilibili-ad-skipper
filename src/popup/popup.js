@@ -13,6 +13,7 @@
     useMedia: true,
     useAudio: false,
     useHeat: true,
+    skipHereButton: true,
     showMarkers: true,
     showToast: true,
     toastDurationMs: 6000,
@@ -261,7 +262,7 @@
   }
 
   function setControlsEnabled(on) {
-    for (const id of ['rescan', 'clearOverrides', 'markStart', 'markEnd']) $(id).disabled = !on;
+    for (const id of ['rescan', 'clearOverrides', 'markStart', 'markEnd', 'skipHere']) $(id).disabled = !on;
   }
 
   // ---------- data flow ----------
@@ -369,6 +370,7 @@
     $('markEnd').addEventListener('click', markEnd);
     $('markClear').addEventListener('click', async () => { marks = null; await saveMarks(null); renderMarks(); });
     $('rescan').addEventListener('click', () => act({ type: 'BAS_RESCAN' }, '已开始重新检测'));
+    $('skipHere').addEventListener('click', () => act({ type: 'BAS_SKIP_HERE' }, '已跳过当前广告'));
     $('clearOverrides').addEventListener('click', () => act({ type: 'BAS_CLEAR_OVERRIDES' }, '已清除本视频覆盖'));
     $('openOptions').addEventListener('click', () => {
       try { chrome.runtime.openOptionsPage(); } catch (e) { /* ignore */ }

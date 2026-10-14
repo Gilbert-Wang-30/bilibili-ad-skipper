@@ -42,6 +42,12 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
   Undo seeks back and remembers that segment as "not an ad" for this video. Ignored segments stay on the progress bar
   (dimmed) and in the popup with a **恢复** button.
 * **Manual mode**: a **跳过广告 ▶** button appears instead; click it to skip.
+* **Missed an ad?** Click the **⏭** button in the player's control bar (or 跳过正在播放的广告 in the popup) while the ad
+  plays. It finds the end from everything around that moment, even evidence too weak to auto-skip on: segments shown
+  but not skipped, 空降 coordinates posted near now, landing danmaku (欢迎回来 / 空降成功), the heat curve, the next
+  chapter. If nothing is found it moves forward 30 s. The toast offers **撤销** and **记住** (save it as an ad for this
+  video, so it is skipped automatically next time). On the measured ads, presses land within 3 s of the real end 76 %
+  of the time and always within 10 s.
 * If you seek into a skipped segment yourself, it is not skipped again until you leave it.
 * **Popup** (toolbar icon): on/off, mode, the list of segments (跳到此处 / 忽略), low-confidence candidates, manual marking
   (标记广告开始 / 结束), 重新检测, 清除本视频覆盖.
@@ -64,6 +70,7 @@ src/content/30-detect-chapters.js
 src/content/31-detect-danmaku.js
 src/content/32-media.js       frame/audio transition analyzer
 src/content/34-detect-heat.js 高能进度条 heat curve: ad-shaped runs, confirmation, guard, offers
+src/content/35-skip-here.js   "skip the ad playing now": end estimate for ads the detectors missed
 src/content/33-fusion.js      merge, snap, overrides → segments
 src/content/40-skipper.js     timeupdate watcher, skip/undo/manual
 src/content/41-ui.js + content.css   markers, toast, skip button
