@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>恰饭跳过 — 设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="page">
+    <header class="hdr">
+      <h1>恰饭跳过 <span class="ver" id="version"></span></h1>
+      <span class="saved" id="saved" aria-live="polite">已保存</span>
+    </header>
+
+    <form id="form" autocomplete="off">
+      <section class="card">
+        <h2>基本</h2>
+        <label class="row">
+          <input type="checkbox" name="enabled">
+          <span class="lbl">启用扩展<small>关闭后不再检测、也不显示进度条标记。</small></span>
+        </label>
+        <div class="row">
+          <span class="lbl">工作模式<small>自动跳过：到达广告段自动跳到结尾；手动按钮：只在播放器右下角显示「跳过广告」按钮。</small></span>
+          <select name="mode">
+            <option value="auto">自动跳过</option>
+            <option value="manual">手动按钮</option>
+          </select>
+        </div>
+        <div class="row">
+          <span class="lbl">自动跳过置信度阈值 <output id="minConfidenceOut">60%</output><small>只有置信度不低于该值的广告段才会自动跳过；低于阈值的仍会显示标记和手动按钮。越低越激进，误跳越多。</small></span>
+          <input type="range" name="minConfidence" min="0.3" max="0.9" step="0.05">
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>检测来源</h2>
+        <label class="row">
+          <input type="checkbox" name="useChapters">
+          <span class="lbl">UP 主章节<small>视频分段标题含「广告 / 恰饭 / 赞助 / 推广」等即视为广告段（最可靠）。</small></span>
+        </label>
+        <label class="row">
+          <input type="checkbox" name="useDanmaku">
+          <span class="lbl">弹幕分析<small>根据「空降 4:50」「感谢空降」「欢迎回来」等弹幕聚类推断广告起止。</small></span>
+        </label>
+        <label class="row">
+          <input type="checkbox" name="useHeat">
+          <span class="lbl">播放热度（高能进度条）<small>大量观众拖动跳过广告时，热度曲线会在广告结尾形成陡峭的峰值。用于确认弹幕结果（未登录时弹幕较少，效果尤其明显）；仅凭热度只显示手动跳过按钮。</small></span>
+        </label>
+        <label class="row">
+          <input type="checkbox" name="useMedia">
+          <span class="lbl">画面突变对齐<small>低频采样画面亮度直方图，把弹幕估计的边界吸附到最近的镜头切换处，使跳转更精确。</small></span>
+        </label>
+        <label class="row">
+          <input type="checkbox" name="useAudio">
+          <span class="lbl">音频分析（实验）<small>通过 captureStream 监听音量 / 频谱突变。少数情况下可能影响性能，默认关闭。</small></span>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>显示与跳转</h2>
+        <label class="row">
+          <input type="checkbox" name="showMarkers">
+          <span class="lbl">在进度条上显示广告标记<small>橙色 = 章节，粉色 = 弹幕，绿色 = 手动添加。</small></span>
+        </label>
+        <label class="row">
+          <input type="checkbox" name="showToast">
+          <span class="lbl">跳过后显示提示（含「撤销」按钮）</span>
+        </label>
+        <div class="row">
+          <span class="lbl">提示停留时间（毫秒）<small>1000 – 20000。</small></span>
+          <input type="number" name="toastDurationMs" min="1000" max="20000" step="500">
+        </div>
+        <div class="row">
+          <span class="lbl">落点偏移 <output id="landingOffsetSecOut">0 秒</output><small>跳转目标 = 广告结束时间 + 偏移。负值提前落地（可能看到一点广告尾巴），正值略过结尾。范围 −5 … +10 秒。</small></span>
+          <input type="range" name="landingOffsetSec" min="-5" max="10" step="0.5">
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>关键词</h2>
+        <div class="row col">
+          <span class="lbl">额外「广告开始」弹幕关键词<small>每行一个，作为子串匹配，命中即视为强起始信号。例如：恰饭时间、本期赞助。</small></span>
+          <textarea name="extraStartKeywords" rows="4" placeholder="每行一个关键词"></textarea>
+        </div>
+        <div class="row col">
+          <span class="lbl">额外「广告结束」弹幕关键词<small>每行一个。例如：安全着陆、广告没了。</small></span>
+          <textarea name="extraEndKeywords" rows="4" placeholder="每行一个关键词"></textarea>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>忽略的 UP 主</h2>
+        <div class="row col">
+          <span class="lbl">在这些 UP 主的视频中不做任何处理<small>每行一个，可填数字 mid 或空间链接（如 https://space.bilibili.com/123456）。保存时自动转换为 mid。</small></span>
+          <textarea name="ignoreUps" rows="4" placeholder="123456&#10;https://space.bilibili.com/654321"></textarea>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>高级</h2>
+        <label class="row">
+          <input type="checkbox" name="debug">
+          <span class="lbl">调试日志<small>在视频页控制台输出详细的检测过程（前缀 [BAS]）。</small></span>
+        </label>
+      </section>
+    </form>
+
+    <section class="card actions">
+      <h2>数据</h2>
+      <div class="btn-row">
+        <button type="button" class="btn" id="resetBtn">恢复默认</button>
+        <button type="button" class="btn" id="exportBtn">导出设置</button>
+        <button type="button" class="btn" id="importBtn">导入设置</button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+        <button type="button" class="btn danger" id="clearCacheBtn">清除缓存与覆盖</button>
+      </div>
+      <p class="help">「清除缓存与覆盖」会删除所有视频的检测结果缓存，以及你在各个视频上做的「忽略 / 手动添加」记录；设置本身不受影响。</p>
+      <p class="help" id="storageInfo"></p>
+    </section>
+
+    <footer class="foot">
+      所有分析均在本地完成，不会上传任何数据。
+    </footer>
+  </div>
+  <div class="toast" id="toast" hidden></div>
+  <script src="options.js"></script>
+</body>
+</html>

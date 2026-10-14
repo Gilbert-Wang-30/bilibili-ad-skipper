@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BAS UI harness — bpx player mock</title>
+<!-- the real extension stylesheet, loaded via relative path -->
+<link rel="stylesheet" href="../../src/content/content.css">
+<style>
+  /* ---- page chrome (harness only) ---- */
+  html, body { margin: 0; background: #f1f2f3; font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #18191c; }
+  .h-wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+  .h-wrap h1 { font-size: 18px; margin: 0 0 12px; }
+  .h-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .h-toolbar button { font: inherit; font-size: 13px; padding: 6px 12px; border: 1px solid #c9ccd0; border-radius: 6px; background: #fff; cursor: pointer; }
+  .h-toolbar button:hover { border-color: #fb7299; color: #fb7299; }
+  .h-toolbar .h-sep { flex-basis: 100%; height: 0; }
+  .h-log { background: #fff; border: 1px solid #e3e5e7; border-radius: 6px; padding: 8px 12px; height: 140px; overflow: auto; font: 12px/1.5 Consolas, monospace; white-space: pre-wrap; }
+  .h-note { color: #61666d; font-size: 12px; }
+
+  /* ---- bpx player mock: class names + sizes from SPEC §1 / research §1 ---- */
+  #bilibili-player { width: 960px; max-width: 100%; }
+  .bpx-player-container { position: relative; background: #000; color: #fff; }
+  .bpx-player-container[data-screen="web"] { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; }
+  .bpx-player-container[data-screen="web"] .bpx-player-video-area { width: 100%; height: 100%; aspect-ratio: auto; }
+  .bpx-player-video-area { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #111; }
+  .bpx-player-video-perch { position: absolute; inset: 0; }
+  .bpx-player-video-wrap { position: absolute; inset: 0; }
+  .bpx-player-video-wrap video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+  .bpx-player-row-dm-wrap { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .bili-danmaku-x-dm { position: absolute; white-space: nowrap; font-size: 22px; text-shadow: 1px 1px 2px #000; animation: dm-roll 9s linear infinite; }
+  @keyframes dm-roll { from { transform: translateX(960px); } to { transform: translateX(-100%); } }
+  .bpx-player-top-wrap { position: absolute; left: 0; right: 0; top: 0; height: 60px; z-index: 70; background: linear-gradient(rgba(0,0,0,.5), transparent); padding: 12px 20px; font-size: 15px; box-sizing: border-box; opacity: 1; transition: opacity .2s; }
+  .bpx-player-toast-wrap { position: absolute; left: 32px; top: 70px; z-index: 76; }
+  .bpx-player-toast-item { background: rgba(0,0,0,.6); border-radius: 4px; padding: 6px 12px; font-size: 13px; }
+
+  .bpx-player-control-wrap { position: absolute; left: 0; right: 0; bottom: 0; z-index: 75; opacity: 1; transition: opacity .2s; }
+  .bpx-player-control-mask { position: absolute; left: 0; right: 0; bottom: 0; height: 110px; background: linear-gradient(transparent, rgba(0,0,0,.6)); pointer-events: none; }
+  .bpx-player-control-entity { position: relative; padding: 0 15px; }
+  .bpx-player-control-bottom { display: flex; align-items: center; height: 48px; }
+  .bpx-player-control-bottom-left, .bpx-player-control-bottom-right { display: flex; align-items: center; gap: 8px; }
+  .bpx-player-control-bottom-center { flex: 1; display: flex; justify-content: center; }
+  .bpx-player-video-inputbar { width: 60%; max-width: 480px; height: 28px; border-radius: 6px; background: rgba(255,255,255,.12); display: flex; align-items: center; padding: 0 10px; box-sizing: border-box; font-size: 12px; color: #aaa; }
+  .bpx-player-ctrl-btn { width: 36px; height: 22px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 12px; opacity: .9; }
+  .bpx-player-ctrl-btn:hover { opacity: 1; color: #fb7299; }
+  .bpx-player-ctrl-time { font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  .bpx-player-progress-area { height: 12px; display: flex; align-items: center; cursor: pointer; }
+  .bpx-player-progress-wrap { width: 100%; }
+  .bpx-player-progress { position: relative; height: 4px; width: 100%; background: rgba(255,255,255,.25); transition: height .1s; }
+  .bpx-player-progress-area:hover .bpx-player-progress { height: 6px; }
+  .bpx-player-progress-schedule-wrap { position: absolute; inset: 0; }
+  .bpx-player-progress-schedule { position: absolute; inset: 0; }
+  .bpx-player-progress-schedule-buffer { position: absolute; left: 0; top: 0; bottom: 0; width: 55%; background: rgba(255,255,255,.3); }
+  .bpx-player-progress-schedule-current { position: absolute; left: 0; top: 0; bottom: 0; width: 20%; background: #fb7299; }
+  .bpx-player-progress-thumb { position: absolute; left: 20%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #fff; z-index: 2; }
+  .bpx-player-shadow-progress-area { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255,255,255,.2); opacity: 0; transition: opacity .2s; }
+  .bpx-player-shadow-progress-schedule-wrap { position: absolute; left: 0; top: 0; bottom: 0; width: 20%; background: #fb7299; }
+
+  /* "controls hidden" state (mouse idle in the real player) */
+  .bpx-player-container.h-controls-hidden .bpx-player-control-wrap,
+  .bpx-player-container.h-controls-hidden .bpx-player-top-wrap { opacity: 0; pointer-events: none; }
+  .bpx-player-container.h-controls-hidden .bpx-player-shadow-progress-area { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="h-wrap">
+  <h1>Bilibili Ad Skipper — UI harness (bpx player mock)</h1>
+  <p class="h-note">Loads <code>../../src/content/00-ns.js</code>, <code>41-ui.js</code> and <code>content.css</code> via relative paths. Serve this folder over http (e.g. <code>deno run -A npm:serve</code> or <code>python -m http.server</code>) and open <code>test/harness/player-mock.html</code>. Hover the progress bar markers for titles; hover a toast to pause its auto-hide; click the video to check the player still receives clicks.</p>
+
+  <div id="bilibili-player">
+    <div class="bpx-player-container" data-screen="normal">
+      <div class="bpx-player-primary-area">
+        <div class="bpx-player-video-area">
+          <div class="bpx-player-video-perch">
+            <div class="bpx-player-video-wrap">
+              <video id="mockVideo" muted playsinline crossorigin="anonymous"></video>
+            </div>
+          </div>
+          <div class="bpx-player-row-dm-wrap">
+            <div class="bili-danmaku-x-dm bili-danmaku-x-show" style="top:12%;animation-delay:-1s">空降 6:00</div>
+            <div class="bili-danmaku-x-dm bili-danmaku-x-show" style="top:30%;animation-delay:-4s;color:#ffd">感谢空警600</div>
+            <div class="bili-danmaku-x-dm bili-danmaku-x-show" style="top:48%;animation-delay:-7s">欢迎回来</div>
+          </div>
+          <div class="bpx-player-top-wrap">模拟视频标题 — 【测试】这是一个 bpx 播放器 DOM 复刻</div>
+          <div class="bpx-player-toast-wrap"><div class="bpx-player-toast-item"><div class="bpx-player-toast-row"><span class="bpx-player-toast-text">（原生 toast 示例，z76）</span></div></div></div>
+          <div class="bpx-player-shadow-progress-area"><div class="bpx-player-shadow-progress-schedule-wrap"></div></div>
+          <div class="bpx-player-control-wrap">
+            <div class="bpx-player-control-mask"></div>
+            <div class="bpx-player-control-entity">
+              <div class="bpx-player-progress-area">
+                <div class="bpx-player-progress-wrap">
+                  <div class="bpx-player-progress">
+                    <div class="bpx-player-progress-schedule-wrap">
+                      <div class="bpx-player-progress-schedule">
+                        <div class="bpx-player-progress-schedule-buffer"></div>
+                        <div class="bpx-player-progress-schedule-current"></div>
+                        <div class="bpx-player-progress-thumb"></div>
+                      </div>
+                    </div>
+                    <div class="bpx-player-progress-point-wrap"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="bpx-player-control-bottom">
+                <div class="bpx-player-control-bottom-left">
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-play">▶</div>
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-next">⏭</div>
+                  <div class="bpx-player-ctrl-time"><span class="bpx-player-ctrl-time-current">02:00</span> / <span class="bpx-player-ctrl-time-duration">10:00</span></div>
+                </div>
+                <div class="bpx-player-control-bottom-center"><div class="bpx-player-video-inputbar">发个友善的弹幕见证当下</div></div>
+                <div class="bpx-player-control-bottom-right">
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-quality">1080P</div>
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-playbackrate">倍速</div>
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-subtitle">字幕</div>
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-volume">🔊</div>
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-setting">⚙</div>
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-pip">⧉</div>
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-wide">⬌</div>
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-web" id="btnWebFull" title="网页全屏">⛶</div>
+                  <div class="bpx-player-ctrl-btn bpx-player-ctrl-full">⤢</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="h-toolbar">
+    <button data-act="mount">mount()</button>
+    <button data-act="markers">renderMarkers(3 段示例)</button>
+    <button data-act="markers-offer">renderMarkers(+ offerOnly 开场跳伞)</button>
+    <button data-act="markers-clear">renderMarkers([])</button>
+    <span class="h-sep"></span>
+    <button data-act="toast">showToast(撤销)</button>
+    <button data-act="toast-plain">showToast(纯文本, 3s)</button>
+    <button data-act="toast-html">showToast(html, 含不安全标签)</button>
+    <button data-act="toast-dismiss">dismissToasts()</button>
+    <span class="h-sep"></span>
+    <button data-act="skip-show">showSkipButton()</button>
+    <button data-act="skip-hide">hideSkipButton()</button>
+    <button data-act="badge">setBadge(3)</button>
+    <button data-act="badge0">setBadge(0)</button>
+    <span class="h-sep"></span>
+    <button data-act="rerender">模拟 bilibili 重绘控制栏（删掉 markers）</button>
+    <button data-act="refresh">refresh()</button>
+    <button data-act="controls">切换“控制栏隐藏”状态（显示 shadow 进度条）</button>
+    <button data-act="webfull">切换网页全屏 data-screen="web"</button>
+    <button data-act="destroy">destroy()</button>
+  </div>
+  <div class="h-log" id="log"></div>
+</div>
+
+<!-- extension scripts (classic scripts, relative paths) -->
+<script src="../../src/content/00-ns.js"></script>
+<script src="../../src/content/41-ui.js"></script>
+<script>
+(function () {
+  var BAS = window.BAS;
+  var logEl = document.getElementById('log');
+  function log() {
+    var line = Array.prototype.map.call(arguments, function (a) { return typeof a === 'string' ? a : JSON.stringify(a); }).join(' ');
+    logEl.textContent = new Date().toLocaleTimeString() + '  ' + line + '\n' + logEl.textContent;
+  }
+  BAS.state.settings.debug = true;
+
+  // ---- fake video: a canvas stream so the <video> shows moving content (optional; harmless if unsupported) ----
+  (function fakeVideo() {
+    var video = document.getElementById('mockVideo');
+    try {
+      var canvas = document.createElement('canvas');
+      canvas.width = 640; canvas.height = 360;
+      var ctx = canvas.getContext('2d');
+      var t0 = Date.now();
+      function draw() {
+        var t = (Date.now() - t0) / 1000;
+        var hue = (t * 12) % 360;
+        var g = ctx.createLinearGradient(0, 0, 640, 360);
+        g.addColorStop(0, 'hsl(' + hue + ',55%,25%)');
+        g.addColorStop(1, 'hsl(' + ((hue + 80) % 360) + ',55%,45%)');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, 640, 360);
+        ctx.fillStyle = 'rgba(255,255,255,.85)';
+        ctx.font = 'bold 28px sans-serif';
+        ctx.fillText('mock <video>  ' + BAS.util.fmtTime(120 + t), 24, 60);
+        ctx.font = '16px sans-serif';
+        ctx.fillText('点击视频区域应仍能触发播放器事件（看日志）', 24, 90);
+        requestAnimationFrame(draw);
+      }
+      draw();
+      if (canvas.captureStream) { video.srcObject = canvas.captureStream(15); video.play().catch(function () {}); }
+    } catch (e) { log('fake video unavailable:', String(e)); }
+  })();
+
+  // The real player toggles play/pause on video-area clicks; log them to prove our overlays do not intercept.
+  var area = document.querySelector('.bpx-player-video-area');
+  area.addEventListener('click', function (e) {
+    var ours = e.target.closest && e.target.closest('.bas-layer, .bas-markers');
+    log('player received click on', e.target.className || e.target.tagName, ours ? '(from BAS element — should NOT happen for buttons)' : '');
+  });
+  document.querySelector('.bpx-player-progress-wrap').addEventListener('click', function (e) {
+    var r = e.currentTarget.getBoundingClientRect();
+    log('progress click → seek to', BAS.util.fmtTime((e.clientX - r.left) / r.width * DURATION), '(target:', e.target.className + ')');
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === ' ') log('document keydown Space reached the player (would toggle play)');
+  });
+
+  var container = document.querySelector('.bpx-player-container');
+  var DURATION = 600;
+  var SEGS = [
+    { id: 'chapter:60-120', start: 60, end: 120, source: 'chapter', sources: ['chapter', 'danmaku'], confidence: 0.95, reason: '章节「广告时间」', autoSkip: true, enabled: true },
+    { id: 'danmaku:300-390', start: 300, end: 390, source: 'danmaku', sources: ['danmaku'], confidence: 0.9, reason: '弹幕 14 条 · 空降 5 条 · 感谢 6 条', autoSkip: true, enabled: true },
+    { id: 'danmaku:500-540', start: 500, end: 540, source: 'danmaku', sources: ['danmaku'], confidence: 0.45, reason: '弹幕 3 条 · 感谢 2 条', autoSkip: false, enabled: true },
+  ];
+  var OFFER = { id: 'danmaku:0-45', start: 0, end: 45, source: 'danmaku', sources: ['danmaku'], confidence: 0.5, reason: '开场跳伞 0:45 ×7', autoSkip: false, offerOnly: true, enabled: true };
+
+  var ACTIONS = {
+    mount: function () { log('mount →', BAS.ui.mount(container), 'isMounted:', BAS.ui.isMounted()); },
+    markers: function () { BAS.ui.renderMarkers(SEGS, DURATION); log('renderMarkers 3 segments, duration', DURATION); },
+    'markers-offer': function () { BAS.ui.renderMarkers(SEGS.concat([OFFER, { id: 'user:200-230', start: 200, end: 230, source: 'user', sources: ['user'], confidence: 1, reason: '手动添加', autoSkip: true, enabled: false }]), DURATION); log('renderMarkers 5 segments (offerOnly + disabled user)'); },
+    'markers-clear': function () { BAS.ui.renderMarkers([], DURATION); log('cleared markers'); },
+    toast: function () {
+      var seg = SEGS[1];
+      BAS.ui.showToast({
+        text: '已跳过广告 ' + BAS.util.fmtTime(301) + ' → ' + BAS.util.fmtTime(seg.end) + '（' + seg.reason + '）',
+        actionLabel: '撤销',
+        onAction: function () { log('撤销 clicked → skipper.undo() + storage.addIgnore()'); },
+      });
+      log('showToast with 撤销');
+    },
+    'toast-plain': function () { BAS.ui.showToast({ text: '检测完成：发现 2 段广告', durationMs: 3000 }); log('showToast plain 3s'); },
+    'toast-html': function () {
+      var h = BAS.ui.showToast({ html: '章节 <b>「广告<img src=x onerror="alert(1)">」</b> <a href="javascript:alert(1)">链接</a><script>alert(1)<\/script> 已跳过', durationMs: 8000 });
+      log('showToast html → sanitized innerHTML:', h.el ? h.el.querySelector('.bas-toast__text').innerHTML : '(no el)');
+    },
+    'toast-dismiss': function () { BAS.ui.dismissToasts(); log('dismissToasts'); },
+    'skip-show': function () {
+      var active = document.activeElement;
+      BAS.ui.showSkipButton({ label: '跳过广告 ▶', sub: BAS.util.fmtTime(500) + ' → ' + BAS.util.fmtTime(540), onClick: function () { log('skip button clicked → skipper.skipNow(seg)'); BAS.ui.hideSkipButton(); } });
+      log('showSkipButton; focus unchanged:', document.activeElement === active);
+    },
+    'skip-hide': function () { BAS.ui.hideSkipButton(); log('hideSkipButton'); },
+    badge: function () { BAS.ui.setBadge(3); log('setBadge(3)'); },
+    badge0: function () { BAS.ui.setBadge(0); log('setBadge(0)'); },
+    rerender: function () {
+      // bilibili sometimes rebuilds the progress bar: clone it without our nodes
+      var p = document.querySelector('.bpx-player-progress');
+      var clone = p.cloneNode(true);
+      Array.prototype.forEach.call(clone.querySelectorAll('.bas-markers'), function (n) { n.remove(); });
+      p.parentNode.replaceChild(clone, p);
+      var s = document.querySelector('.bpx-player-shadow-progress-area');
+      var sc = s.cloneNode(true);
+      Array.prototype.forEach.call(sc.querySelectorAll('.bas-markers'), function (n) { n.remove(); });
+      s.parentNode.replaceChild(sc, s);
+      document.querySelector('.bpx-player-progress-wrap').addEventListener('click', function (e) { log('progress click (re-rendered bar) target:', e.target.className); });
+      log('simulated re-render: .bpx-player-progress and shadow area replaced; markers in DOM:', document.querySelectorAll('.bas-markers').length);
+    },
+    refresh: function () { log('refresh →', BAS.ui.refresh(), '; .bas-markers in DOM:', document.querySelectorAll('.bas-markers').length, '; markers:', document.querySelectorAll('.bas-marker').length); },
+    controls: function () { container.classList.toggle('h-controls-hidden'); log('controls hidden:', container.classList.contains('h-controls-hidden')); },
+    webfull: function () { var w = container.getAttribute('data-screen') === 'web'; container.setAttribute('data-screen', w ? 'normal' : 'web'); log('data-screen =', container.getAttribute('data-screen')); },
+    destroy: function () { BAS.ui.destroy(); log('destroy; bas nodes left:', document.querySelectorAll('[class^="bas-"]').length); },
+  };
+  document.querySelector('.h-toolbar').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-act]');
+    if (!b) return;
+    try { ACTIONS[b.getAttribute('data-act')](); } catch (err) { log('ERROR', String(err && err.stack || err)); }
+  });
+  document.getElementById('btnWebFull').addEventListener('click', ACTIONS.webfull);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && container.getAttribute('data-screen') === 'web') ACTIONS.webfull(); });
+
+  // initial state
+  ACTIONS.mount();
+  ACTIONS.markers();
+  ACTIONS.badge();
+  log('BAS.ui API:', Object.keys(BAS.ui).join(', '));
+
+  // deep link: player-mock.html#auto=toast,skip-show,rerender,refresh  → runs those actions after load (for headless checks)
+  var m = /auto=([\w,-]+)/.exec(location.hash);
+  if (m) m[1].split(',').forEach(function (a) { if (ACTIONS[a]) { try { ACTIONS[a](); } catch (err) { log('ERROR', String(err)); } } });
+})();
+</script>
+</body>
+</html>

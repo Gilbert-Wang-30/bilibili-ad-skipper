@@ -1,0 +1,18 @@
+# ---- kept local, never published ----
+# research notes (partly copied from third-party API docs)
+docs/research/
+# real-danmaku corpus and raw samples: third-party user comments / hashed sender ids
+test/fixtures-full/
+test/fixtures/BV*.json
+test/fixtures/_summary.json
+test/fixtures/seg_sample.bin
+# scratch / build output
+test/scratch/
+build/
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+.vscode/
+.idea/

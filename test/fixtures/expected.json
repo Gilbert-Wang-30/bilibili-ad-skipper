@@ -1,0 +1,181 @@
+{
+  "_comment": "Ground truth for test/fixtures-full/*.json. 'segments' = sponsored segments that MUST be found with autoSkip (confidence >= 0.6) within tolerance; 'offers' = offerOnly/low-confidence ranges that MAY be reported but must never be autoSkip; 'negatives' = videos where NO autoSkip segment may be produced; 'unknown' = no assertion. Times in seconds. Verified = frames inspected in the real player on 2026-10-13. Segment starts/ends were re-measured frame by frame (seek at 0.5 s steps + frame-difference scan); start = first second of ad content including the narrated segue.",
+  "segments": {
+    "BV1jCJs6UE9S": [
+      {
+        "start": 253.3,
+        "end": 358.8,
+        "startTol": 3,
+        "endTol": 3,
+        "verified": true,
+        "note": "frame-measured 2026-10-13: cut at 253.5 (flash) / 359.0; 空降6:00 burst at 254, 欢迎回来 at 359"
+      }
+    ],
+    "BV11NV86tEjW": [
+      {
+        "start": 266.0,
+        "end": 369.0,
+        "startTol": 3,
+        "endTol": 3,
+        "verified": true,
+        "note": "frame-measured 2026-10-13: hamster lead-in at 266 after 609工程 posts from 256; outro hamster 368.6, content 369.5"
+      }
+    ],
+    "BV1WhaA6hE7s": [
+      {
+        "start": 342.0,
+        "end": 429.8,
+        "startTol": 3,
+        "endTol": 3,
+        "verified": true,
+        "note": "frame-measured 2026-10-13: narration segues at 342 (油腻爆痘 at 343.5); 710工程 posts from 340; content resumes 430.3"
+      }
+    ],
+    "BV1gGgk6hEU8": [
+      {
+        "start": 362.0,
+        "end": 465.5,
+        "startTol": 3,
+        "endTol": 3,
+        "verified": true,
+        "note": "frame-measured 2026-10-13: segue line 天热入睡难 at 362, visual ad at 364; outro hamster 465, content 466"
+      }
+    ],
+    "BV1bHtd6CESR": [
+      {
+        "start": 180.5,
+        "end": 289.5,
+        "startTol": 3,
+        "endTol": 3,
+        "verified": true,
+        "note": "frame-measured 2026-10-13: segue 给你看个好东西 at ~180.5, product at 183.6; outro 爽爽嘞 288.5, content 290"
+      }
+    ],
+    "BV1y5gP61E6m": [
+      {
+        "start": 253.5,
+        "end": 357.8,
+        "startTol": 3,
+        "endTol": 3,
+        "verified": true,
+        "note": "frame-measured 2026-10-13: segue joke 光溜水滑的小嫩脸 at ~253.5; 大胆入手 ends at 357, content 358"
+      }
+    ],
+    "BV1Cgpd6pEBR": [
+      {
+        "start": 404.5,
+        "end": 491.5,
+        "startTol": 3,
+        "endTol": 3,
+        "verified": true,
+        "note": "frame-measured 2026-10-13: 4th-wall segue at ~404.5, chair at 407; outro 支棱了 490.5, content title 492"
+      }
+    ]
+  },
+  "offersVerifiedNotAds": {
+    "BV1xdNt6TEP3": [
+      {
+        "start": 1195,
+        "end": 1416,
+        "note": "viewers skipped a story section (仙人指路, 跳伞23:36 x1, 躲过一劫 are about the plot). Frames at 1206/1300/1410 are normal content. Must NOT autoSkip; may appear as offer/low confidence"
+      }
+    ],
+    "BV1fHaB6WEh1": [
+      {
+        "start": 748,
+        "end": 779,
+        "note": "跳过12:58/13:00 x2 skip a benchmark-chart section; frames show charts, not an ad. Must NOT autoSkip"
+      }
+    ]
+  },
+  "offers": {
+    "BV17uhW6VE2R": [
+      {
+        "start": 0,
+        "end": 290,
+        "note": "跳伞04:50 x7 at t=0: opening skip, offerOnly"
+      }
+    ],
+    "BV1fHaB6WEh1": [
+      {
+        "start": 0,
+        "endMin": 240,
+        "endMax": 370,
+        "note": "divergent 空降 targets 4:09..6:09 at t=0: offerOnly"
+      }
+    ],
+    "BV1eZ4y1j7kw": [
+      {
+        "start": 0,
+        "end": 120,
+        "note": "正片2:00 at t=1..7: offerOnly intro skip; the 打钱/三重恰饭 chatter at 109-157 is a joke about buying books (verified NOT an ad)"
+      }
+    ],
+    "BV1hGaG6vEX2": [
+      {
+        "start": 34,
+        "end": 240,
+        "note": "省流:看样片直接跳转4:00 x2: TL;DR jump, offerOnly"
+      }
+    ]
+  },
+  "negatives": [
+    "BV1T7411W7ca",
+    "BV1eZ4y1j7kw",
+    "BV1heam6TExz",
+    "BV1oZeA6fERD",
+    "BV1bQh463EU6",
+    "BV1pKap6JEAz",
+    "BV1iFMX6aE9b",
+    "BV15GtZ6tEGS",
+    "BV1aoeJ6vEoz",
+    "BV1DVaZ6hEYT",
+    "BV1yB4y1Q7ZN",
+    "BV1cSec6tEux",
+    "BV17uhW6VE2R",
+    "BV1hGaG6vEX2",
+    "BV1xdNt6TEP3",
+    "BV1fHaB6WEh1",
+    "BV1VV5T6mEXM",
+    "BV1Ebho6BE2J",
+    "BV1A2bi6UEev"
+  ],
+  "negativeNotes": {
+    "BV1T7411W7ca": "【半佛】瑞幸: 44 '广告/恰饭/打钱' danmaku 755-880 but frames show normal content to the end",
+    "BV1oZeA6fERD": "'开屏广告' discussion at 250-266 (app splash ads) — word 广告 in another sense",
+    "BV1pKap6JEAz": "57 '商单' jokes in the first 67 s about the whole video",
+    "BV1iFMX6aE9b": "whole video is a 小米 commercial; '广子' x76 spread everywhere",
+    "BV1heam6TExz": "'罗技打钱'/'商单' jokes; the whole video is a sponsored review, no segment",
+    "BV1aoeJ6vEoz": "'坐标轴/坐标系' false hits on 坐标",
+    "BV15GtZ6tEGS": "'是不是商单' debate at 515-550",
+    "BV1VV5T6mEXM": "verified NO ad (frames 56/73/163/176 are content). Bare numbers '220V', '250的电工', '360' must not be parsed as 2:20/2:50/3:60 jump targets",
+    "BV1Ebho6BE2J": "verified NO ad (frames 101/119/173/187). '300s', 'x300p', '300p别想了' are product names, not 3:00 targets",
+    "BV1A2bi6UEev": "verified NO ad (frames 101/116/232/247). 'CR400AF-Z' is a train model, not a 4:00 target"
+  },
+  "unknown": [
+    "BV1gHps6yEHL",
+    "BV1J7hE6aEDQ",
+    "BV1eVtc6hEhn",
+    "BV12TgV63ESW",
+    "BV17PYC6KEXu",
+    "BV1yEaJ6CEUk",
+    "BV1xVY26dEbz",
+    "BV17E896RE5G",
+    "BV14ReF6NEWN",
+    "BV1JQhz6fE1x",
+    "BV1LjYL6WEg4",
+    "BV1MBYJ6REHu",
+    "BV1gipd6iELS",
+    "BV1CthJ6CEDF",
+    "BV1yjen6QEN3",
+    "BV1wBbC6MEmK",
+    "BV1oUg56wEaQ",
+    "BV1KR3v6kEJ4",
+    "BV13tgX6cEe9",
+    "BV151Ne6MErH",
+    "BV1KeNQ6zE3x",
+    "BV1S2j36tExQ",
+    "BV1uXEj62E6T",
+    "BV1oFVM6HEM8"
+  ]
+}

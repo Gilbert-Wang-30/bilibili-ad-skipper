@@ -1,0 +1,86 @@
+{
+ "bvid": "BV1xVY26dEbz",
+ "duration": 1333,
+ "view_points": [
+  {
+   "type": 2,
+   "from": 0,
+   "to": 78,
+   "content": "开场",
+   "imgUrl": "http://i0.hdslb.com/bfs/vchapter/41838447299_0.jpg",
+   "logoUrl": "",
+   "team_type": "",
+   "team_name": ""
+  },
+  {
+   "type": 2,
+   "from": 78,
+   "to": 454,
+   "content": "应县木塔",
+   "imgUrl": "http://i0.hdslb.com/bfs/vchapter/41838447299_78.jpg",
+   "logoUrl": "",
+   "team_type": "",
+   "team_name": ""
+  },
+  {
+   "type": 2,
+   "from": 454,
+   "to": 768,
+   "content": "晋华宫矿山",
+   "imgUrl": "http://i0.hdslb.com/bfs/vchapter/41838447299_454.jpg",
+   "logoUrl": "",
+   "team_type": "",
+   "team_name": ""
+  },
+  {
+   "type": 2,
+   "from": 768,
+   "to": 861,
+   "content": "大同火山群",
+   "imgUrl": "http://i0.hdslb.com/bfs/vchapter/41838447299_768.jpg",
+   "logoUrl": "",
+   "team_type": "",
+   "team_name": ""
+  },
+  {
+   "type": 2,
+   "from": 861,
+   "to": 1016,
+   "content": "体验醋文化",
+   "imgUrl": "http://i0.hdslb.com/bfs/vchapter/41838447299_861.jpg",
+   "logoUrl": "",
+   "team_type": "",
+   "team_name": ""
+  },
+  {
+   "type": 2,
+   "from": 1016,
+   "to": 1250,
+   "content": "儿童公园",
+   "imgUrl": "http://i0.hdslb.com/bfs/vchapter/41838447299_1016.jpg",
+   "logoUrl": "",
+   "team_type": "",
+   "team_name": ""
+  },
+  {
+   "type": 2,
+   "from": 1250,
+   "to": 1317,
+   "content": "总结",
+   "imgUrl": "http://i0.hdslb.com/bfs/vchapter/41838447299_1250.jpg",
+   "logoUrl": "",
+   "team_type": "",
+   "team_name": ""
+  },
+  {
+   "type": 2,
+   "from": 1317,
+   "to": 1333,
+   "content": "片尾",
+   "imgUrl": "http://i0.hdslb.com/bfs/vchapter/41838447299_1317.jpg",
+   "logoUrl": "",
+   "team_type": "",
+   "team_name": ""
+  }
+ ]
+}

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bilibili Ad Skipper</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="hdr">
+    <div class="hdr-row">
+      <h1 class="title">恰饭跳过</h1>
+      <label class="switch" title="总开关">
+        <input type="checkbox" id="enabled" aria-label="启用扩展">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="seg-ctrl" role="radiogroup" aria-label="工作模式" id="modeCtrl">
+      <button type="button" class="seg-btn" data-mode="auto" role="radio" aria-checked="false">自动跳过</button>
+      <button type="button" class="seg-btn" data-mode="manual" role="radio" aria-checked="false">手动按钮</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="video">
+      <div class="video-title" id="videoTitle" title="">—</div>
+      <div class="status" id="status">检测中…</div>
+    </section>
+
+    <section class="list-sec" id="segSec" hidden>
+      <ul class="seg-list" id="segList"></ul>
+    </section>
+
+    <section class="list-sec" id="droppedSec" hidden>
+      <button type="button" class="collapse" id="droppedToggle" aria-expanded="false">
+        <span class="chev">▸</span><span id="droppedLabel">低置信度 (0)</span>
+      </button>
+      <ul class="seg-list dropped" id="droppedList" hidden></ul>
+    </section>
+
+    <section class="manual" id="manualSec" hidden>
+      <div class="manual-row">
+        <button type="button" class="btn" id="markStart">标记广告开始</button>
+        <button type="button" class="btn" id="markEnd">标记广告结束</button>
+        <button type="button" class="btn ghost" id="markClear" title="清除标记" hidden>✕</button>
+      </div>
+      <div class="manual-hint" id="manualHint">播放到广告开始处点「标记广告开始」，播放到结束处点「标记广告结束」。</div>
+    </section>
+  </main>
+
+  <footer class="ftr">
+    <button type="button" class="btn" id="rescan">重新检测</button>
+    <button type="button" class="btn" id="clearOverrides" title="撤销对本视频的忽略/手动添加">清除本视频覆盖</button>
+    <button type="button" class="btn link" id="openOptions">设置</button>
+  </footer>
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
