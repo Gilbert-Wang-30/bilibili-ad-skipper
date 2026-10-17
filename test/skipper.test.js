@@ -352,3 +352,28 @@ Deno.test('Skipper: constructing without a video and attaching later works', () 
     assertEquals(v.seeks, [160]);
   } finally { skipper.destroy(); }
 });
+
+Deno.test('Skipper: a suppression follows the segment when re-fusion refines its edges under the same id', () => {
+  const v = new FakeVideo(600);
+  const { skipper, state } = harness(v, [seg('d:100-190', 100, 190)]);
+  try {
+    v.userSeek(120);                                  // the viewer chose to watch it
+    state.segments = [seg('d:100-190', 100, 197)];    // A/V look-ahead moved the end, id unchanged
+    v.play(150); v.play(193); v.play(195);
+    assertEquals(v.seeks, [], 'still suppressed inside the refined range');
+    v.play(199.5);
+    assert(!skipper.isSuppressed({ id: 'd:100-190' }), 'lifted once past the refined end');
+  } finally { skipper.destroy(); }
+});
+
+Deno.test('Skipper: an auto-skip whose end is refined later skips the remainder too', () => {
+  const v = new FakeVideo(600);
+  const { skipper, state } = harness(v, [seg('d:100-190', 100, 190)]);
+  try {
+    v.play(100.5);
+    assertEquals(v.seeks, [190]);
+    state.segments = [seg('d:100-190', 100, 197)];    // A/V verdict arrives after the skip, id unchanged
+    v.play(190.5); v.play(192.5); v.play(193);
+    assertEquals(v.seeks, [190, 197], 'the 7 s the first skip missed are skipped as well');
+  } finally { skipper.destroy(); }
+});

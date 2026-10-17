@@ -7,7 +7,7 @@
  *   - it is usually BRIGHTER (+0.8…+3.4 σ) and its spectrum changes more (flux),
  *   while ordinary content stays within about ±0.4 σ on the audio measures. score = z(db) − z(dbsd) + 0.3·z(luma)
  *   + 0.3·z(flux) (clamped) puts every ad at ≥ 1.8 even with boundaries ±5 s off; content slices of ad length
- *   (60–130 s) peak at 1.2. Short slices are noisier, so the bar rises as the segment gets shorter.
+ *   (60–130 s) peak at 1.2. Short slices are noisier: under 40 s a loud passage of content looks just like an ad.
  * An ad's END is a "transition": a short audio dip (≥ 9 dB below its neighbourhood) together with a hard picture cut.
  * Seen from inside the ad, the true end scores ≥ 2.8 on "end-likeness" (inside vs the 15 s after it); transitions inside
  * an ad stay below 1.2 and no content transition reached 2.0. Starts are softer (the uploader segues while talking),
@@ -24,7 +24,9 @@
   const W_LUMA = 0.3, W_FLUX = 0.3;
   const DIP_MAX_DB = -26, DIP_DEPTH = 9, DIP_NEIGHBOUR = 5;
   const CUT_PAIR = 0.9, CUT_MIN = 30, DRIFT_MIN = 60;
-  const SEG_AD = [[60, 1.4], [40, 1.8], [25, 2.4]];   // [min duration, score needed to confirm]
+  // [min duration, score needed to confirm]. Every measured ad is ≥ 60 s; loud, steady 25–40 s passages of ordinary
+  // content reach 3.1 and 40–60 s ones 1.9 (audio only), so shorter spans are never confirmed and 40–60 s need 2.2.
+  const SEG_AD = [[60, 1.4], [40, 2.2]];
   const SEG_NOT_AD = 0.6, SEG_NOT_AD_MIN_DUR = 30;
   const END_SNAP_R = 8, END_MIN_SIDE = 1.5;
   const START_BACK = 0.5, START_AHEAD = 3, START_MIN_SIDE = 2.0;   // a start never moves much earlier: that would cut content
@@ -202,7 +204,8 @@
     let first = null;
     const hits = [];
     for (const x of T) {
-      if (x.t <= t + 3 || x.t > maxT) continue;
+      // a transition the press has only just passed counts too (the caller sees it is behind it: the ad is over)
+      if (x.t <= t - 3 || x.t > maxT) continue;
       if (first && x.t > first.t + 3) break;
       const inside = within(B, Math.max(t - 20, x.t - END_INSIDE), x.t - 0.5), after = within(B, x.t + 0.5, x.t + END_AFTER);
       if (inside.length < 6 || after.length < 6) continue;
@@ -254,7 +257,7 @@
       if (isOpen(c)) {
         if (r.verdict !== 'ad' || !isFinite(r.end) || r.end - c.start < 20) return c;
         // the start cluster must itself point at an ad: sponsor vocabulary or a jump cue
-        const startEvidence = (ev.adVocab || 0) >= 1 || (ev.targetsAgree || 0) >= 1 || (Array.isArray(ev.targets) && ev.targets.length > 0);
+        const startEvidence = (ev.adVocab || 0) >= 1 || (ev.targetsAgree || 0) >= 1 || (ev.nTargets || 0) >= 1 || (Array.isArray(ev.targets) && ev.targets.length > 0);
         out.idStart = c.start; out.idEnd = r.end;
         out.end = r.end; out.lockEnd = true;
         if (r.startBy) { out.start = r.start; out.lockStart = true; }
@@ -281,8 +284,23 @@
     });
   }
 
+  /**
+   * Final gate, applied after every boost (heat included): a danmaku segment ending in the last 3 % of the video
+   * (detector R14, evidence.endZone) is only auto-skipped with an A/V 'ad' verdict.
+   */
+  function gate(candidates, settings) {
+    const list = Array.isArray(candidates) ? candidates : [];
+    const minConf = settings && isFinite(settings.minConfidence) ? settings.minConfidence : 0.6;
+    const cap = Math.max(0, r2(minConf - 0.05));
+    return list.map((c) => {
+      const ev = c && c.evidence;
+      if (!c || c.source !== 'danmaku' || !ev || !ev.endZone || (ev.av && ev.av.verdict === 'ad') || !(c.confidence > cap)) return c;
+      return Object.assign({}, c, { confidence: cap });
+    });
+  }
+
   BAS.avSegment = {
-    blocks, transitions, segmentScore, verdictOf, adThreshold, assess, assessOpen, findEnd, apply, key, wants, isOpen,
+    blocks, transitions, segmentScore, verdictOf, adThreshold, assess, assessOpen, findEnd, apply, gate, key, wants, isOpen,
     CONST: { CTX, SEG_AD, SEG_NOT_AD, SEG_NOT_AD_MIN_DUR, END_SNAP_R, FIND_MIN, AV_BOOST, AV_CAP, OPEN_SPAN },
   };
 })();

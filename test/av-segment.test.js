@@ -162,17 +162,96 @@ Deno.test({ name: 'measured: story/benchmark skips, intros and ordinary content 
     assert(r.verdict !== 'ad', `${f}: ` + JSON.stringify(r));
   }
   assert(AV.assess(loadAvFixture('BV1xdNt6TEP3_skip'), 1195, 1416).verdict === 'notAd', 'the story skip is refuted');
-  let n = 0, conf = 0;
-  for (const f of ['BV1jCJs6UE9S', 'BV11NV86tEjW', 'BV1VV5T6mEXM', 'BV1Ebho6BE2J', 'BV1A2bi6UEev', 'BV1T7411W7ca', 'BV1oZeA6fERD']) {
-    const d = loadAvFixture(f + '_content');
-    for (let len = 60; len <= 130; len += 10) for (let s = d.t0 + 25; s + len <= d.t1 - 25; s += 5) {
-      const r = AV.assess(d, s, s + len);
-      if (r.verdict === 'unknown') continue;
-      n++; if (r.verdict === 'ad') conf++;
+  // every length from 15 s (a loud, steady 25 s passage of content scores like an ad: short spans are never confirmed)
+  const files = ['BV1jCJs6UE9S_content', 'BV11NV86tEjW_content', 'BV1VV5T6mEXM_content', 'BV1Ebho6BE2J_content', 'BV1A2bi6UEev_content', 'BV1T7411W7ca_content', 'BV1oZeA6fERD_content', 'BV1xdNt6TEP3_skip', 'BV1fHaB6WEh1_skip', 'BV17uhW6VE2R_intro', 'BV1eZ4y1j7kw_intro', 'BV1hGaG6vEX2_intro'];
+  for (const audioOnly of [false, true]) {
+    let n = 0;
+    const hits = [];
+    for (const f of files) {
+      const d0 = loadAvFixture(f), d = audioOnly ? { audio: d0.audio, video: [] } : d0;
+      for (let len = 15; len <= 130; len += 5) for (let s = d0.t0 + 25; s + len <= d0.t1 - 25; s += 10) {
+        const r = AV.assess(d, s, s + len);
+        if (r.verdict === 'unknown') continue;
+        n++; if (r.verdict === 'ad') hits.push([f, s, len, r.score]);
+      }
+    }
+    assert(n > 1500, 'enough slices: ' + n);
+    assert(hits.length === 0, `${audioOnly ? 'audio-only ' : ''}content slices confirmed as ads: ${hits.length}/${n} ` + JSON.stringify(hits.slice(0, 5)));
+  }
+  // the loud passage the review found (189–215 s) in particular
+  assert(AV.assess(loadAvFixture('BV1Ebho6BE2J_content'), 190, 215).verdict !== 'ad', 'a 25 s loud passage is not an ad');
+});
+
+Deno.test({ name: 'measured: a press anywhere inside an ad (0.25 s grid) lands within 2.5 s of the end; presses just after it see it behind them', ignore: !HAS_AV }, () => {
+  const exp = loadExpected();
+  for (const [bv, segs] of Object.entries(exp.segments)) {
+    const d = loadAvFixture(bv + '_ad');
+    const { start, end } = segs[0];
+    for (let t = start + 1; t <= end - 0.5; t += 0.25) {
+      const f = AV.findEnd(d, t);
+      assert(f && !f.pending && Math.abs(f.t - end) <= 2.5, `${bv} press ${t.toFixed(2)} (end ${end}): ` + JSON.stringify(f));
+    }
+    // right after the end the measured end is returned (behind the press → skip-here reports the ad is over)
+    for (let t = end; t <= end + 1; t += 0.25) {
+      const f = AV.findEnd(d, t);
+      assert(f && !f.pending && Math.abs(f.t - end) <= 2.5 && f.t <= t + 1, `${bv} press after the end ${t.toFixed(2)}: ` + JSON.stringify(f));
     }
   }
-  assert(n > 100, 'enough slices: ' + n);
-  assert(conf === 0, `content slices confirmed as ads: ${conf}/${n}`);
+});
+
+Deno.test('end zone: "skip to the end" targets are dropped, an ad before a short outro waits for the A/V check', () => {
+  const S = Object.assign({}, BAS.DEFAULT_SETTINGS);
+  const dur = 300;
+  const filler = []; for (let t = 0; t < dur; t += 2.3) filler.push({ t, text: '哈哈哈' });
+  const ad = [[219, '空降4:45'], [220, '空降4:45'], [221, '空降 4:45'], [222, '空降4:45'], [223, '广告来了'], [224, '恰饭了'], [225, '空降4:45'], [226, '空降4:45'], [286, '欢迎回来'], [287, '欢迎回来']];
+  const r = BAS.detectDanmaku(filler.concat(ad.map(([t, text]) => ({ t, text }))), dur, S);
+  const c = r.candidates.find((x) => x.end != null && Math.abs(x.end - 285) <= 3);
+  assert(c, 'the ad keeps its end at 4:45: ' + JSON.stringify(r.candidates.map((x) => [x.start, x.end, x.confidence])));
+  assert(c.confidence < S.minConfidence && c.evidence.endZone, 'capped below auto-skip until the A/V check: ' + c.confidence);
+  const lifted = AV.apply([c], new Map([[AV.key(c), { verdict: 'ad', score: 2.5, start: c.start, end: c.end, startBy: null, endBy: null }]]), S)[0];
+  assert(lifted.confidence >= S.minConfidence, 'A/V confirmation lifts it: ' + lifted.confidence);
+  assert(AV.gate([lifted], S)[0].confidence >= S.minConfidence, 'the gate lets an A/V-confirmed end-zone segment through');
+  // any other boost (heat corroboration, a lower threshold) is undone by the final gate
+  const heated = Object.assign({}, c, { confidence: 0.75 });
+  assert(AV.gate([heated], S)[0].confidence < S.minConfidence, 'heat alone cannot make an end-zone segment auto-skip');
+  const unsure = AV.apply([heated], new Map([[AV.key(c), { verdict: 'unsure', score: 1, start: c.start, end: c.end }]]), S)[0];
+  assert(AV.gate([unsure], S)[0].confidence < S.minConfidence, "an 'unsure' verdict does not open the gate");
+  assert(AV.gate([heated], Object.assign({}, S, { minConfidence: 0.5 }))[0].confidence < 0.5, 'the cap follows minConfidence');
+  const plain = { source: 'danmaku', start: 10, end: 100, confidence: 0.8, evidence: {} };
+  assert(AV.gate([plain], S)[0] === plain, 'segments outside the end zone are untouched');
+  // jokes pointing at the very end are not targets at all
+  assert(BAS.util.extractTargets('空降4:57', 100, dur).length === 0, 'a target 3 s before the end is dropped');
+  assert(BAS.util.extractTargets('空降4:45', 100, dur).length === 1, 'a target 15 s before the end is kept');
+  assert(BAS.detectDanmaku.classify('跳伞', 100, dur, 'airborne:298000').targets.length === 0, 'airborne target at the end is dropped');
+  assert(BAS.detectDanmaku.classify('跳伞', 100, dur, 'airborne:285000').targets.some((x) => x.target === 285), 'airborne target before a short outro is kept');
+});
+
+Deno.test('fetchRange: only an exact 206 counts; a node ignoring Range is skipped; abort propagates', async () => {
+  const realFetch = globalThis.fetch;
+  const calls = [];
+  const resp = (status, n) => ({ status, body: { cancel() {} }, arrayBuffer: async () => new ArrayBuffer(n) });
+  try {
+    globalThis.fetch = async (url, init) => { calls.push([url, init.headers.Range, init.credentials, init.cache]); return url === 'a' ? resp(200, 5000) : url === 'b' ? resp(206, 3) : resp(206, 10); };
+    const stats = { bytes: 0 };
+    const buf = await BAS.mediaProbe.fetchRange({ urls: ['a', 'b', 'c'] }, 10, 19, undefined, stats);
+    assert(buf.length === 10, 'the third URL answered the exact range');
+    assert(stats.bytes === 13, 'bytes of the failed short attempt count against the budget too: ' + stats.bytes);
+    assert(calls.length === 3 && calls.every((x) => x[1] === 'bytes=10-19' && x[2] === 'omit' && x[3] === 'no-store'), 'ranged, no cookies, not cached: ' + JSON.stringify(calls));
+    globalThis.fetch = async () => resp(403, 0);
+    let err = null;
+    try { await BAS.mediaProbe.fetchRange({ urls: ['a'] }, 0, 9); } catch (e) { err = e; }
+    assert(err && err.status === 403, 'HTTP status is reported for the manifest refresh');
+    globalThis.fetch = async (url) => (url === 'a' ? resp(403, 0) : resp(200, 50));
+    err = null;
+    try { await BAS.mediaProbe.fetchRange({ urls: ['a', 'b'] }, 0, 9); } catch (e) { err = e; }
+    assert(err && err.status === 403, 'a 403 from the base URL is not masked by a backup that ignores Range: ' + (err && err.message));
+    const ac = new AbortController();
+    globalThis.fetch = (url, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new DOMException('x', 'AbortError'))));
+    const p = BAS.mediaProbe.fetchRange({ urls: ['a', 'b'] }, 0, 9, ac.signal).catch((e) => e);
+    ac.abort();
+    const e2 = await p;
+    assert(e2 && e2.name === 'AbortError', 'caller abort rejects with AbortError (no fallback to the next URL)');
+  } finally { globalThis.fetch = realFetch; }
 });
 
 Deno.test('open-ended danmaku start: A/V supplies the end only when the span looks like an ad', () => {

@@ -141,8 +141,11 @@
     /** Drop suppressions once playback is clearly outside the segment. */
     _expireSuppressions(t) {
       if (!this._suppressed.size) return;
+      // Re-fusion can move a segment's edges under the same id (A/V refinement). A segment the viewer chose to watch
+      // stays suppressed over its current range; an auto-skip keeps the range it skipped, so a later end is skipped too.
+      const current = new Map(this._segments().map((x) => [this._key(x), x]));
       for (const [key, entry] of this._suppressed) {
-        const s = entry.seg;
+        const s = entry.reason === 'skipped' ? entry.seg : (current.get(key) || entry.seg);
         if (t < s.start - LEAVE_MARGIN_SEC || t > s.end + LEAVE_MARGIN_SEC) this._suppressed.delete(key);
       }
     }

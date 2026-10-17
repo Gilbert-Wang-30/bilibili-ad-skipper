@@ -126,6 +126,10 @@ Deno.test('storage.cache: TTL, version check and LRU prune', () =>
     const entry = await S.setCache(777, data);
     assertEquals(entry.version, BAS.VERSION);
     assert(Date.now() - entry.ts < 1000);
+    // a caller-supplied detection time is kept (A/V updates must not make stale results look fresh); future ones are not
+    const old = Date.now() - 3 * 3600 * 1000;
+    assertEquals((await S.setCache(779, Object.assign({ ts: old }, data))).ts, old);
+    assert(Date.now() - (await S.setCache(780, Object.assign({ ts: Date.now() + 1e9 }, data))).ts < 1000);
     const hit = await S.getCache(777);
     assertEquals(hit.segments, data.segments);
     assertEquals(hit.candidates, data.candidates);

@@ -265,6 +265,10 @@
   const HARD_CUT = 40;               // mean |Δluma| between consecutive frames that marks a hard cut
   const manifestCache = new Map();   // cid → {audio, video, at}
   const MANIFEST_TTL_MS = 50 * 60 * 1000;   // CDN URLs carry an expiry (deadline); refresh well before it
+  const FETCH_MIN_MS = 15000, FETCH_MIN_BPS = 64 * 1024;   // an attempt may take 15 s + 1 s per 64 KB, then the next URL
+  const FETCH_HEADERS_MS = 8000;     // … and must answer with headers within this (skip-here passes a shorter limit)
+  const AUDIO_PIECE_SEC = 30;        // decodeAudioData holds its whole input at 48 kHz stereo: decode in pieces
+  const shortSide = (v) => Math.min(+v.width || Infinity, +v.height || Infinity);   // portrait streams are 360×640
 
   async function getManifest(info, opts) {
     const key = String(info.cid);
@@ -276,7 +280,7 @@
     const dash = j.data.dash;
     const urls = (x) => [x.baseUrl || x.base_url].concat(x.backupUrl || x.backup_url || []).filter(Boolean);
     const audio = (dash.audio || []).filter((a) => /^mp4a/.test(a.codecs || '') && a.segment_base).sort((a, b) => a.bandwidth - b.bandwidth)[0];
-    const vids = (dash.video || []).filter((v) => v.segment_base && v.height <= 480).sort((a, b) => a.bandwidth - b.bandwidth);
+    const vids = (dash.video || []).filter((v) => v.segment_base && shortSide(v) <= 480).sort((a, b) => a.bandwidth - b.bandwidth);
     let video = null;
     if (typeof VideoDecoder !== 'undefined') {
       for (const v of vids) {
@@ -293,68 +297,158 @@
     return m;
   }
 
-  async function fetchRange(track, a, b, signal) {
-    let lastErr = null;
-    for (const url of track.urls) {
-      try {
-        const r = await fetch(url, { headers: { Range: `bytes=${a}-${b}` }, credentials: 'omit', signal });
-        if (r.status !== 206 && r.status !== 200) { lastErr = Object.assign(new Error('HTTP ' + r.status), { status: r.status }); continue; }
-        return new Uint8Array(await r.arrayBuffer());
-      } catch (e) { if (signal && signal.aborted) throw e; lastErr = e; }
+  const abortError = () => new DOMException('aborted', 'AbortError');
+  /** Reads exactly `want` bytes, counting every byte received (also from attempts that then fail). */
+  async function readExactly(r, want, stats) {
+    if (!r.body || typeof r.body.getReader !== 'function') {
+      const buf = new Uint8Array(await r.arrayBuffer());
+      if (stats) stats.bytes += buf.length;
+      if (buf.length !== want) throw new Error(`range returned ${buf.length} of ${want} bytes`);
+      return buf;
     }
-    throw lastErr || new Error('media fetch failed');
+    const reader = r.body.getReader(), buf = new Uint8Array(want);
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (stats) stats.bytes += value.length;
+      if (got + value.length > want) { try { reader.cancel(); } catch (e) { /* ignore */ } throw new Error('range longer than requested'); }
+      buf.set(value, got); got += value.length;
+    }
+    if (got !== want) throw new Error(`range returned ${got} of ${want} bytes`);
+    return buf;
   }
-  async function loadIndex(track, signal) {
+  /**
+   * Bytes [a, b] of a track: tries the base URL, then the backups. Only an exact 206 counts (a node that ignores Range
+   * would send the whole file). Each attempt must answer within `headersMs` and finish within a size-scaled limit, so a
+   * stalled node cannot block the probe; a node that timed out moves to the back of the list. A 403/404 is reported in
+   * preference to later errors (the caller refreshes the manifest on it). Not stored in the HTTP cache.
+   */
+  async function fetchRange(track, a, b, signal, stats, headersMs) {
+    let lastErr = null, authErr = null;
+    const want = b - a + 1, limit = FETCH_MIN_MS + Math.ceil(want / FETCH_MIN_BPS) * 1000;
+    const hdr = Math.min(limit, headersMs > 0 ? headersMs : FETCH_HEADERS_MS);
+    for (const url of track.urls.slice()) {
+      if (signal && signal.aborted) throw abortError();
+      const ac = new AbortController();
+      const onAbort = () => ac.abort();
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+      let timedOut = false;
+      const expire = () => { timedOut = true; ac.abort(); };
+      let timer = setTimeout(expire, hdr);
+      try {
+        const r = await fetch(url, { headers: { Range: `bytes=${a}-${b}` }, credentials: 'omit', cache: 'no-store', signal: ac.signal });
+        clearTimeout(timer); timer = setTimeout(expire, limit);
+        const len = r.headers && typeof r.headers.get === 'function' ? +r.headers.get('content-length') : 0;
+        if (r.status !== 206 || (len && len !== want)) {
+          try { if (r.body) r.body.cancel(); } catch (e) { /* ignore */ }
+          lastErr = Object.assign(new Error(r.status !== 206 ? 'HTTP ' + r.status : `range of ${len} bytes, wanted ${want}`), { status: r.status });
+          if (r.status === 403 || r.status === 404) authErr = authErr || lastErr;
+          continue;
+        }
+        return await readExactly(r, want, stats);
+      } catch (e) {
+        if (signal && signal.aborted) throw abortError();
+        lastErr = timedOut ? Object.assign(new Error('media fetch timed out'), { name: 'TimeoutError' }) : e;
+        if (timedOut) {
+          const i = track.urls.indexOf(url);
+          if (i >= 0 && track.urls.length > 1) { track.urls.splice(i, 1); track.urls.push(url); }
+        }
+      } finally {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', onAbort);
+      }
+    }
+    throw authErr || lastErr || new Error('media fetch failed');
+  }
+  async function loadIndex(track, signal, stats, headersMs) {
     if (track._index) return track._index;
     const end = +String(track.seg.index_range).split('-')[1];
     const initEnd = +String(track.seg.initialization).split('-')[1];
-    const head = await fetchRange(track, 0, end, signal);
+    const head = await fetchRange(track, 0, end, signal, stats, headersMs);
     const init = head.slice(0, initEnd + 1);
     const sidx = parseSidx(head.slice(initEnd + 1), initEnd + 1);
     if (!sidx || !sidx.segments.length) throw new Error('no segment index');
     track._index = { init, initInfo: parseInit(init), segments: sidx.segments };
     return track._index;
   }
-  /** Bytes of the fragments covering [t0, t1] (one ranged request) → {bytes, base, first, last}. */
-  async function fetchWindow(track, t0, t1, signal) {
-    const idx = await loadIndex(track, signal);
+  /** The fragments covering [t0, t1] in one ranged request → {bytes, base, start, end, idx, segs:[{start, duration, off, size}]}. */
+  async function fetchWindow(track, t0, t1, signal, stats, headersMs) {
+    const idx = await loadIndex(track, signal, stats, headersMs);
     const segs = idx.segments.filter((s) => s.start + s.duration > t0 && s.start < t1);
     if (!segs.length) return null;
     const a = segs[0].offset, b = segs[segs.length - 1].offset + segs[segs.length - 1].size - 1;
-    const bytes = await fetchRange(track, a, b, signal);
-    return { bytes, base: a, start: segs[0].start, end: segs[segs.length - 1].start + segs[segs.length - 1].duration, idx };
+    const bytes = await fetchRange(track, a, b, signal, stats, headersMs);
+    return {
+      bytes, base: a, start: segs[0].start, end: segs[segs.length - 1].start + segs[segs.length - 1].duration, idx,
+      segs: segs.map((x) => ({ start: x.start, duration: x.duration, off: x.offset - a, size: x.size })),
+    };
   }
 
-  async function audioWindow(track, t0, t1, signal) {
-    const w = await fetchWindow(track, t0, t1, signal);
+  /**
+   * Audio features for [t0, t1]. The window is decoded in pieces of ≤ 30 s; each piece also re-decodes the fragment
+   * before it, so the frames around a seam (which need audio on both sides) come from the later piece.
+   */
+  async function audioWindow(track, t0, t1, signal, stats, headersMs) {
+    const w = await fetchWindow(track, t0, t1, signal, stats, headersMs);
     if (!w) return [];
-    const rate = 16000;
-    let pcm = null;
-    // 1) the browser's demuxer on init + fragments
-    try {
-      const buf = new Uint8Array(w.idx.init.length + w.bytes.length);
-      buf.set(w.idx.init, 0); buf.set(w.bytes, w.idx.init.length);
-      const ctx = new OfflineAudioContext(1, rate, rate);
-      const ab = await ctx.decodeAudioData(buf.buffer);
-      pcm = ab.getChannelData(0);
-    } catch (e) { BAS.debug('probe: decodeAudioData failed, trying WebCodecs', e && e.message); }
-    // 2) WebCodecs AudioDecoder on the demuxed AAC frames
-    if (!pcm && typeof AudioDecoder !== 'undefined' && w.idx.initInfo && w.idx.initInfo.config) pcm = await decodeAacWebCodecs(w, rate);
-    if (!pcm) throw new Error('audio decode failed');
-    return audioFrames(pcm, rate, w.start, 0.25).filter((f) => f.t >= t0 - 1 && f.t <= t1 + 1);
+    const rate = 16000, out = [];
+    for (let i = 0; i < w.segs.length;) {
+      let j = i;
+      while (j + 1 < w.segs.length && w.segs[j + 1].start + w.segs[j + 1].duration - w.segs[i].start <= AUDIO_PIECE_SEC) j++;
+      const from = Math.max(0, i - 1);
+      const piece = w.bytes.subarray(w.segs[from].off, w.segs[j].off + w.segs[j].size);
+      const pcm = await decodeAudioPiece(w.idx, piece, rate);
+      if (signal && signal.aborted) throw abortError();
+      // the last second of the previous piece is taken from this one (it starts a fragment earlier), without a gap
+      const own = i === 0 ? -Infinity : w.segs[i].start - 1;
+      while (out.length && out[out.length - 1].t >= own) out.pop();
+      const lastT = out.length ? out[out.length - 1].t : -Infinity;
+      for (const f of audioFrames(pcm, rate, w.segs[from].start, 0.25)) if (f.t >= own && f.t > lastT + 0.125) out.push(f);
+      i = j + 1;
+    }
+    return out.filter((f) => f.t >= t0 - 1 && f.t <= t1 + 1);
   }
-  async function decodeAacWebCodecs(w, rate) {
-    const info = w.idx.initInfo;
-    const samples = parseFragments(w.bytes, 0);
+  /** init + fragments → mono PCM at `rate` (all channels averaged: some uploads carry the voice on one side only). */
+  async function decodeAudioPiece(idx, bytes, rate) {
+    try {
+      const buf = new Uint8Array(idx.init.length + bytes.length);
+      buf.set(idx.init, 0); buf.set(bytes, idx.init.length);
+      const ab = await new OfflineAudioContext(1, rate, rate).decodeAudioData(buf.buffer);
+      const n = ab.numberOfChannels;
+      if (n === 1) return ab.getChannelData(0);
+      const mono = new Float32Array(ab.length);
+      for (let c = 0; c < n; c++) { const ch = ab.getChannelData(c); for (let k = 0; k < mono.length; k++) mono[k] += ch[k] / n; }
+      return mono;
+    } catch (e) { BAS.debug('probe: decodeAudioData failed, trying WebCodecs', e && e.message); }
+    if (typeof AudioDecoder !== 'undefined' && idx.initInfo && idx.initInfo.config) {
+      const pcm = await decodeAacWebCodecs(idx.initInfo, bytes, rate);
+      if (pcm) return pcm;
+    }
+    throw new Error('audio decode failed');
+  }
+  async function decodeAacWebCodecs(info, bytes, rate) {
+    const samples = parseFragments(bytes, 0);
     const chunks = [];
-    const dec = new AudioDecoder({ output: (d) => { const n = d.numberOfFrames, tmp = new Float32Array(n); d.copyTo(tmp, { planeIndex: 0, format: 'f32-planar' }); chunks.push({ sr: d.sampleRate, pcm: tmp }); d.close(); }, error: () => {} });
+    let failure = null;
+    const dec = new AudioDecoder({
+      output: (d) => {
+        try {
+          const n = d.numberOfFrames, ch = d.numberOfChannels, mono = new Float32Array(n), tmp = new Float32Array(n);
+          for (let c = 0; c < ch; c++) { d.copyTo(tmp, { planeIndex: c, format: 'f32-planar' }); for (let k = 0; k < n; k++) mono[k] += tmp[k] / ch; }
+          chunks.push({ sr: d.sampleRate, pcm: mono });
+        } finally { d.close(); }
+      },
+      error: (e) => { failure = e; },
+    });
     dec.configure({ codec: 'mp4a.40.2', sampleRate: info.sampleRate || 44100, numberOfChannels: info.channels || 2, description: info.config });
-    for (const s of samples) dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round(s.dts / info.timescale * 1e6), data: w.bytes.subarray(s.offset, s.offset + s.size) }));
-    await dec.flush(); dec.close();
-    if (!chunks.length) return null;
+    for (const s of samples) dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round(s.dts / info.timescale * 1e6), data: bytes.subarray(s.offset, s.offset + s.size) }));
+    try { await dec.flush(); } catch (e) { failure = failure || e; }
+    if (dec.state !== 'closed') dec.close();
+    if (!chunks.length) { if (failure) BAS.debug('probe: AudioDecoder failed', failure && failure.message); return null; }
     const sr = chunks[0].sr, total = chunks.reduce((a, c) => a + c.pcm.length, 0);
     const all = new Float32Array(total); let o = 0; for (const c of chunks) { all.set(c.pcm, o); o += c.pcm.length; }
-    // naive decimation to `rate`
+    // box-filter decimation to `rate`
     const ratio = sr / rate, out = new Float32Array(Math.floor(total / ratio));
     for (let i = 0; i < out.length; i++) { const a = Math.floor(i * ratio), b = Math.min(total, Math.floor((i + 1) * ratio)); let s = 0; for (let k = a; k < b; k++) s += all[k]; out[i] = s / Math.max(1, b - a); }
     return out;
@@ -364,7 +458,7 @@
   async function videoWindow(track, t0, t1, opts) {
     const o = opts || {};
     const fps = o.fps || 4;
-    const w = await fetchWindow(track, t0, t1, o.signal);
+    const w = await fetchWindow(track, t0, t1, o.signal, o.stats, o.headersMs);
     if (!w || typeof VideoDecoder === 'undefined') return [];
     const info = w.idx.initInfo;
     if (!info || !info.config) throw new Error('no video config');
@@ -408,30 +502,45 @@
     }
     if (dec.state === 'configured') { try { await dec.flush(); } catch (e) { pending.push(e); } }
     if (dec.state !== 'closed') dec.close();
-    if (o.signal && o.signal.aborted) throw new DOMException('aborted', 'AbortError');
+    if (o.signal && o.signal.aborted) throw abortError();
     if (pending.length && !rows.length) throw pending[0];
     rows.sort((a, b) => a.t - b.t);
     return rows.filter((r) => r.t >= t0 - 1 && r.t <= t1 + 1);
   }
 
-  /** Probe [t0, t1] of the current video: {audio: frames[], video: frames[], errors: []}. */
+  /**
+   * Probe [t0, t1] of the current video → {audio: frames[], video: frames[], errors: string[], bytes}. Track failures
+   * are reported in `errors` (the caller decides); an aborted probe rejects with AbortError. A 403/404 (signed CDN URLs
+   * expire and are bound to the client) refreshes the manifest once and retries the failed tracks.
+   */
   async function probe(info, t0, t1, opts) {
     const o = opts || {};
-    const out = { t0, t1, audio: [], video: [], errors: [] };
-    let m = await getManifest(info, o);
-    // an expired / revoked CDN URL answers 403: fetch a fresh manifest once
-    if (m.audio && !o.refresh) {
-      try { await loadIndex(m.audio, o.signal); } catch (e) {
-        if (e && (e.status === 403 || e.status === 404)) m = await getManifest(info, Object.assign({}, o, { refresh: true }));
-        else if (e && e.name === 'AbortError') throw e;
-      }
+    const out = { t0, t1, audio: [], video: [], errors: [], bytes: 0 };
+    const stats = { bytes: 0 };
+    const auth = (e) => !!e && (e.status === 403 || e.status === 404);
+    const run = async (m, only) => {
+      const failed = [];
+      const jobs = [];
+      const want = (k) => !only || only.includes(k);
+      if (m.audio && o.audio !== false && want('audio')) jobs.push(audioWindow(m.audio, t0, t1, o.signal, stats, o.headersMs).then((x) => { out.audio = x; }, (e) => { failed.push(['audio', e]); }));
+      if (m.video && o.video !== false && want('video')) jobs.push(videoWindow(m.video, t0, t1, { fps: o.fps || 4, signal: o.signal, stats, headersMs: o.headersMs }).then((x) => { out.video = x; }, (e) => { failed.push(['video', e]); }));
+      await Promise.all(jobs);
+      if (o.signal && o.signal.aborted) throw abortError();
+      return failed;
+    };
+    try {
+      let failed = await run(await getManifest(info, o));
+      // retry only the tracks whose own failure says the signed URL is no longer valid
+      const expired = failed.filter(([, e]) => auth(e)).map(([k]) => k);
+      if (expired.length) failed = failed.filter(([, e]) => !auth(e)).concat(await run(await getManifest(info, Object.assign({}, o, { refresh: true })), expired));
+      for (const [k, e] of failed) out.errors.push(k + ': ' + ((e && e.message) || e));
+    } catch (e) {
+      if (e && typeof e === 'object') { try { e.bytes = stats.bytes; } catch (_) { /* frozen */ } }
+      throw e;
     }
-    const jobs = [];
-    if (m.audio && o.audio !== false) jobs.push(audioWindow(m.audio, t0, t1, o.signal).then((x) => { out.audio = x; }, (e) => out.errors.push('audio: ' + (e && e.message || e))));
-    if (m.video && o.video !== false) jobs.push(videoWindow(m.video, t0, t1, { fps: o.fps || 4, signal: o.signal }).then((x) => { out.video = x; }, (e) => out.errors.push('video: ' + (e && e.message || e))));
-    await Promise.all(jobs);
+    out.bytes = stats.bytes;
     return out;
   }
 
-  BAS.mediaProbe = { getManifest, loadIndex, fetchWindow, audioWindow, videoWindow, probe, FRAME_W, FRAME_H };
+  BAS.mediaProbe = { getManifest, loadIndex, fetchRange, fetchWindow, audioWindow, videoWindow, probe, FRAME_W, FRAME_H };
 })();

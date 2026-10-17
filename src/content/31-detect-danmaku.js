@@ -40,6 +40,8 @@
  *  R12 Safety net (end-anchored pass): a strong landing cluster (≥ 2 strong markers) that no candidate explains, but
  *      which ≥ 2 earlier coordinates point at, becomes a candidate (same scoring).
  *  R13 Overlapping candidates: the higher confidence wins; ranges are unioned only when both are ≥ 0.6.
+ *  R14 End zone: targets in the last max(8 s, 1 %) are dropped ("skip to the end" jokes); a segment ending in the last
+ *      max(20 s, 3 %) is capped at 0.55 until the audio/video check confirms it (an ad before a short outro).
  */
 (() => {
   const BAS = globalThis.BAS;
@@ -54,6 +56,7 @@
   const AGREE_TOL = 15;         // s, target counts as agreeing with the chosen end
   const MIN_LEN = 8, MAX_LEN = 300;
   const EVIDENCE_CAP = 30;
+  const END_ZONE_CAP = 0.55;    // R14: confidence of a segment ending in the last 3 % until the A/V check confirms it
 
   // ---------- patterns (exported via PATTERNS for the options page) ----------
   const P = {
@@ -122,8 +125,7 @@
         if (ms > t + 5 && (!(duration > 0) || ms <= duration)) sec = ms;
         else if (duration > 0 && v > t + 5 && v <= duration) sec = v;
       }
-      const endGuard = duration > 0 ? Math.max(20, 0.03 * duration) : 0;   // "skip to the end" jokes
-      if (sec != null && sec > t + 5 && sec - t <= 600 && !(duration > 0 && sec > duration - endGuard)) targets.unshift({ target: Math.round(sec * 10) / 10, kind: 'abs', fmt: 'airborne', weak: false, poi: P.poi.test(norm) });
+      if (sec != null && sec > t + 5 && sec - t <= 600 && !(sec > U.endZone(duration).hard)) targets.unshift({ target: Math.round(sec * 10) / 10, kind: 'abs', fmt: 'airborne', weak: false, poi: P.poi.test(norm) });
     }
     res.targets = targets;
     res.poi = P.poi.test(norm) || targets.some((x) => x.poi);
@@ -352,6 +354,16 @@
 
     // ---- Step E: merge / sort ----
     out.candidates = merge(cands.filter((c) => c.end == null || c.end > c.start));
+
+    // ---- R14: end zone. A segment ending in the last 3 % of the video is either an ad before a short outro or a
+    // "skip to the end" joke; the danmaku alone cannot tell, so it waits for the audio/video check (37-av-segment.js
+    // lifts it when the span sounds and looks like an ad).
+    const soft = U.endZone(duration).soft;
+    for (const c of out.candidates) {
+      if (c.end == null || !(c.end > soft) || c.offerOnly) continue;
+      if (c.confidence > END_ZONE_CAP) { c.confidence = END_ZONE_CAP; c.reason += ' · 临近结尾，待音视频核验'; }
+      if (c.evidence) c.evidence.endZone = true;
+    }
   }
 
   const PREFILTER = /[\d零〇一二三四五六七八九十洞幺两拐勾]|广|恰|空降|跳|指路|坐标|快进|正片|谢|thx|3q|金主|甲方|打钱|商单|赞助|推广|回来|回归|着陆|落地|降落|穿越|躲过|逃过|错过|插播|带货|\bad\b|工程|航班|→|右|结束|好了|可以看了|前奏|变奏|接单|接广|零帧|丝滑|无缝|关视频|润物|有广|钱到位|省流|直达|传送|指挥部|饱|不对劲|快跑|来了|开始了|变声|声音不对|猝不及防|画风|连招|工商|植入|软文|品牌|催鸽|信仰|言归|正传|正题|完了/;

@@ -47,7 +47,8 @@ Chrome MV3 extension that detects and skips in-video sponsored segments (恰饭/
   `bandwidth`, `width/height` and `segment_base {initialization:'0-836', index_range:'837-6780'}`. Each stream is one
   fragmented MP4: init (moov) + a `sidx` listing ~5 s fragments (moof+mdat) with byte offsets. The upos CDN answers
   `Range` requests from the page origin with 206 and CORS, so any time window can be fetched without new permissions.
-  The lowest audio is ~65 kbps (8 KB/s), the 360p video ~125 kbps (16 KB/s). `decodeAudioData` accepts init + fragments;
+  The lowest audio is ~65 kbps (8 KB/s); 360p video is 125–400 kbps (AV1 cheapest, AVC dearest). Portrait videos list
+  their streams in portrait pixels (360P = 360×640). `decodeAudioData` accepts init + fragments;
   WebCodecs `VideoDecoder` decodes AV1/AVC 360p at ~40× real time.
 
 ## 2. File layout
@@ -349,13 +350,21 @@ trun → samples) and `VideoDecoder` (back-pressure on the `dequeue` event; `set
 Features: audio every 0.25 s over a 0.5 s window (`db` RMS, spectral centroid / flatness / flux, zcr, 16 log-mel bands);
 video ≤ 4 rows/s plus one at every hard cut, each frame drawn at 48×27 (`mean` luma, `std`, saturation, colourfulness,
 edge density, 8-bin hue; `cut` = largest frame-to-frame mean |Δluma| since the previous row, `drift` = change vs the
-previous row). Nothing is stored. A 190 s window costs ~4.5 MB and 4–10 s.
+previous row). Nothing is stored (`cache: 'no-store'`). A 190 s window costs 4.5–11 MB and 4–10 s.
+Robustness: a ranged attempt counts only as an exact 206 of the requested length (a node that ignores Range is
+skipped); each attempt must answer with headers within 8 s (3 s for skip-here) and finish within 15 s + 1 s per 64 KB,
+then the next backup URL (a node that timed out moves to the back); every byte received counts against the budget;
+a 403/404 is reported in preference to a backup's other error; a 403/404 (signed URLs expire and are bound to the client)
+refreshes the manifest once and retries the failed tracks; audio is decoded in ≤ 30 s pieces (decodeAudioData holds its
+input at 48 kHz stereo) with one fragment of overlap at each seam, and all channels are averaged; the video track is
+chosen by its short side (≤ 480) so portrait videos keep their picture; `bytes` reports what was fetched.
 
 **Judgement** (pure, 1 s blocks of `db`, `dbsd` (loudness spread within the second), `flux`, `luma`):
 * `score(inside, outside) = z(db) − z(dbsd) + 0.3·clamp(z(luma), −1, 3) + 0.3·clamp(z(flux), −2, 2)` with z = Cohen's d.
   Segment score = inside `[s+2, e−2]` vs `[s−45, s−1] ∪ [e+1, e+45]`. Measured: 7 ads ≥ 1.79 with boundaries ±5 s off;
   ad-length (60–130 s) content slices ≤ 1.2 (p99 0.85); story skip −0.1, benchmark skip 0.0, intros ≤ 0.4.
-* Verdict: `ad` when score ≥ 1.4 (≥ 60 s), 1.8 (40–60 s), 2.4 (25–40 s), never below 25 s; `notAd` when ≤ 0.6 and ≥ 30 s;
+* Verdict: `ad` when score ≥ 1.4 (≥ 60 s) or 2.2 (40–60 s), never below 40 s (a loud, steady 25 s passage of content
+  scored 3.1; every measured ad is ≥ 60 s); `notAd` when ≤ 0.6 and ≥ 30 s;
   else `unsure`; `unknown` without data.
 * Transition = a local audio minimum ≤ −26 dB and ≥ 9 dB under the ±5 s median, paired with a cut (`cut` > 30 or
   `drift` > 60) within 0.9 s (audio-only: the dip itself). Inside-ad transitions score < 1.2 on end-likeness, true ends
@@ -363,7 +372,8 @@ previous row). Nothing is stored. A 190 s window costs ~4.5 MB and 4–10 s.
 * `refineEnd`: best transition within ±8 s (±step for heat offers) whose 12 s before/after sides score ≥ 1.5, weighted by
   dip depth and cut strength minus a distance penalty. `refineStart`: only within [−0.5, +3] s of the estimate and side
   score ≥ 2.0 (segues hide the cut, and an earlier start would cut content).
-* `findEnd(data, t)`: first transition after t + 3 whose end-likeness (inside `[max(t−20, p−60), p]` vs the 15 s after) is
+* `findEnd(data, t)`: first transition after t − 3 (one the press has just passed is returned too; skip-here then
+  reports the ad is over) whose end-likeness (inside `[max(t−20, p−60), p]` vs the 15 s after) is
   ≥ 2.0, best within 3 s of it; `{pending}` when the data ends first.
 * `assessOpen(data, s)` for a danmaku start without an end: `findEnd(data, s + 20)` over `[s−45, s+260]`, then `assess`.
 * `apply(candidates, results, settings)`: `notAd` → confidence capped at `minConfidence − 0.05` (offer only); otherwise
@@ -373,8 +383,25 @@ previous row). Nothing is stored. A 190 s window costs ~4.5 MB and 4–10 s.
 
 **Orchestration.** After each fusion the orchestrator probes, one at a time in the background, up to 4 candidates per
 video that are not yet past (auto-skip candidates first, then offers; spans ≤ 420 s; video only for windows ≤ 330 s).
-Each result re-runs fusion and is cached with the detection results (`av: [[key, verdict]]`). Setting `useAvProbe`
+Each result re-runs fusion and is cached with the detection results (`av: [[key, verdict]]`, current candidates only,
+keeping the detection's own timestamp). A probe that fetched or decoded nothing is not a verdict: it is neither stored
+nor cached (two such failures stop probing for that visit). Budget: 60 MB per video. The loop is tagged with its
+detection run, stops when the run or the URL changes, and re-schedules itself for the new run. Setting `useAvProbe`
 (default true).
+
+Skip-here after any wait (danmaku download, A/V analysis): if the viewer seeked, navigated or the element changed,
+nothing happens; if the measured end, or a real estimate (candidate / targets / thanks / heat / chapter), is already
+behind the playhead, a toast says the ad is over; only the blind +30 s step is recomputed from the current position
+(keeping the press-time start for 记住). The skipper judges suppressions (a segment the viewer chose to watch) by the segment's current range,
+since A/V refinement can move edges under the same id.
+
+End zone (detector R14): targets past `duration − max(8 s, 1 %)` are dropped ("skip to the end" jokes, also on the
+airborne path); a danmaku segment ending after `duration − max(20 s, 3 %)` is capped at 0.55 (`evidence.endZone`, kept in
+the cache). `BAS.avSegment.gate` runs after every boost (heat corroboration included) and caps such a segment at
+`minConfidence − 0.05` unless its A/V verdict is `ad`.
+
+Skipper suppressions after a refinement: a segment the viewer chose to watch (user seek / undo) is judged by its
+current range; an auto-skip keeps the range it skipped, so an end that moved later is skipped as well.
 
 ## 8. Skipper — `new BAS.Skipper(video, opts)`
 

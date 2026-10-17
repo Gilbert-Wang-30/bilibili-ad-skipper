@@ -171,6 +171,15 @@
     poi: /省流|封面|高能|名场面|精彩|看点|结论|总结/,
     thanks: /感谢|谢谢|多谢|蟹蟹|thx|3q/,
   };
+  /**
+   * The last stretch of a video. Targets past `hard` are "skip to the end" jokes and are dropped; a segment ending in
+   * the `soft` zone (last 3 %) may be a sponsor read before a short outro, so it is kept but needs the audio/video check.
+   */
+  function endZone(duration) {
+    const d = isFinite(duration) && duration > 0 ? duration : Infinity;
+    if (!isFinite(d)) return { hard: Infinity, soft: Infinity };
+    return { hard: d - Math.max(8, 0.01 * d), soft: d - Math.max(20, 0.03 * d) };
+  }
   function extractTargets(text, t, duration) {
     const out = [];
     if (!text) return out;
@@ -178,9 +187,8 @@
     if (!s) return out;
     const dur = isFinite(duration) && duration > 0 ? duration : Infinity;
     const tt = isFinite(t) ? t : 0;
-    // Targets in the last stretch of the video are "skip to the end" jokes (or the outro), never an ad's end.
-    const endGuard = isFinite(dur) ? Math.max(20, 0.03 * dur) : 0;
-    const minT = tt + 5, maxT = Math.min(dur - endGuard, tt + 600);
+    // Targets at the very end of the video are "skip to the end" jokes, never an ad's end.
+    const minT = tt + 5, maxT = Math.min(endZone(dur).hard, tt + 600);
     const seen = new Set();
     const push = (v, kind, fmt, weak) => {
       if (v == null || !isFinite(v)) return;
@@ -288,7 +296,7 @@
     log, warn, debug,
     state: { settings: Object.assign({}, DEFAULT_SETTINGS) },
     util: { fmtTime, clamp, median, mean, sleep, debounce, throttle, normalizeText, parseTimeMention, overlap, uid,
-      parseChineseNumber, cnToDigits, extractTargets },
+      parseChineseNumber, cnToDigits, extractTargets, endZone },
     events,
   };
   globalThis.BAS = BAS;

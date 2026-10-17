@@ -18,6 +18,7 @@
   const AV_MAX_SPAN = 420;            // longer candidates are not probed
   const AV_VIDEO_MAX_SPAN = 330;      // above this (incl. context) only the audio track is fetched
   const AV_SKIP_HERE_MS = 10000;      // the skip button waits at most this long for the A/V answer
+  const AV_MAX_BYTES = 60 * 1024 * 1024;   // background look-ahead budget per video
 
   const state = {
     video: null,               // {bvid, aid, cid, p, title, duration, mid, upName}
@@ -49,9 +50,11 @@
     av: new Map(),             // candidate key → BAS.avSegment.assess() result (look-ahead A/V verdicts)
     avWanted: [],              // candidates (before A/V) that could be probed
     avTried: new Set(),
-    avBusy: false,
+    avBusy: null,              // runId of the probe loop that is running
     avErrors: 0,
+    avBytes: 0,
     cacheable: false,          // detection results were complete, so A/V results may be cached with them
+    cacheTs: 0,                // when those results were detected (A/V updates must not make stale results look fresh)
     lastKey: null,
     bootAt: Date.now(),
   };
@@ -101,7 +104,7 @@
       candidates: state.candidates,
       dropped: state.dropped,
       settings: settings(),
-      stats: Object.assign({}, state.stats, { cuts: state.media ? state.media.cuts.length : 0, av: { probed: state.av.size, busy: state.avBusy } }),
+      stats: Object.assign({}, state.stats, { cuts: state.media ? state.media.cuts.length : 0, av: { probed: state.av.size, busy: state.avBusy != null, bytes: state.avBytes } }),
       currentTime,
       duration: duration || (state.video && state.video.duration) || null,
     };
@@ -110,7 +113,8 @@
   const slimCandidate = (c) => {
     const o = Object.assign({}, c);
     const ev = c.evidence || {};
-    o.evidence = { targetsAgree: ev.targetsAgree, adVocab: ev.adVocab, strongEnd: ev.strongEnd, mediumEnd: ev.mediumEnd };
+    o.evidence = { targetsAgree: ev.targetsAgree, adVocab: ev.adVocab, strongEnd: ev.strongEnd, mediumEnd: ev.mediumEnd, endZone: ev.endZone,
+      nTargets: Array.isArray(ev.targets) ? ev.targets.length : ev.nTargets };
     return o;
   };
 
@@ -198,6 +202,12 @@
     try { t = v.currentTime; } catch (e) { return null; }
     if (!isFinite(t)) return null;
     skipHereBusy = true;
+    // Several seconds can pass below (danmaku download, A/V analysis): if the viewer seeks meanwhile, do nothing.
+    let seeked = false;
+    const onSeeking = () => { seeked = true; };
+    // same video, same element, same page, no seek since the press
+    const stillHere = () => !seeked && !!state.video && state.video.cid === info.cid && state.videoEl === v && urlShowsVideo(info);
+    try { v.addEventListener('seeking', onSeeking); } catch (e) { /* ignore */ }
     try {
       let list = state.lastDanmaku && state.lastDanmaku.cid === info.cid ? state.lastDanmaku.list : null;
       if (!list) {
@@ -206,7 +216,7 @@
         try { list = await BAS.api.getDanmaku(info.aid, info.cid, info.duration, {}); state.lastDanmaku = { cid: info.cid, list }; }
         catch (e) { BAS.debug('skip-here: danmaku unavailable', e); list = []; }
         if (wait) wait.close();
-        if (!state.video || state.video.cid !== info.cid) return null;
+        if (!stillHere()) return null;
       }
       const dur = info.duration || (isFinite(v.duration) ? v.duration : 0);
       let r = BAS.findAdEnd({
@@ -221,11 +231,21 @@
         let f = null;
         try { f = await avFindEnd(info, t, dur); } catch (e) { BAS.debug('skip-here: A/V failed', e); }
         if (wait) wait.close();
-        if (!state.video || state.video.cid !== info.cid) return null;
-        let now = t;
-        try { now = v.currentTime; } catch (e) { /* ignore */ }
-        if (Math.abs(now - t) > AV_SKIP_HERE_MS / 1000 + 5) return null;     // the viewer moved on meanwhile
-        if (f && f.t > now + 1) r = { end: f.t, start: r.start, source: 'av', reason: '音视频：广告结束处的转场（静音 + 切镜）', evidence: { score: f.score } };
+        if (!stillHere()) return null;
+        let nowAv = t;
+        try { nowAv = v.currentTime; } catch (e) { /* ignore */ }
+        if (f && f.t <= nowAv + 1) { if (BAS.ui) BAS.ui.showToast({ text: '广告已经结束', force: true }); return null; }
+        if (f) r = { end: f.t, start: r.start, source: 'av', reason: '音视频：广告结束处的转场（静音 + 切镜）', evidence: { score: f.score } };
+      }
+      // Waiting (danmaku download, A/V analysis) let playback run on: judge the answer against the position now.
+      let now = t;
+      try { now = v.currentTime; } catch (e) { /* ignore */ }
+      if (r.end <= now + 1) {
+        // a real end estimate that is already behind us means the ad is over; only a blind step is recomputed
+        if (r.source !== 'fallback') { if (BAS.ui) BAS.ui.showToast({ text: '广告已经结束', force: true }); return null; }
+        const again = BAS.findAdEnd({ t: now, duration: dur, danmaku: list, heat: state.heatAnalysis, boundaries: state.boundaries, candidates: [].concat(state.segments, state.dropped, state.candidates) });
+        if (!again) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
+        r = Object.assign({}, again, { start: Math.min(again.start, r.start) });
       }
       try { v.currentTime = r.end; } catch (e) { return null; }
       BAS.log('skip-here', fmtTime(t), '->', fmtTime(r.end), r.source);
@@ -248,7 +268,10 @@
         });
       }
       return r;
-    } finally { skipHereBusy = false; }
+    } finally {
+      skipHereBusy = false;
+      try { v.removeEventListener('seeking', onSeeking); } catch (e) { /* ignore */ }
+    }
   }
   const avAvailable = () => { const s = settings(); return s.enabled && s.useAvProbe !== false && !!BAS.mediaProbe && !!BAS.avSegment && typeof fetch === 'function'; };
   function mergeProbe(a, b) {
@@ -264,7 +287,7 @@
       for (const [a, b] of [[t - 25, t + 130], [t + 115, t + 300]]) {
         const t0 = Math.max(0, a), t1 = dur > 0 ? Math.min(dur - 0.5, b) : b;
         if (t1 <= t0 + 10 || ac.signal.aborted) break;
-        const p = await BAS.mediaProbe.probe(info, t0, t1, { signal: ac.signal });
+        const p = await BAS.mediaProbe.probe(info, t0, t1, { signal: ac.signal, headersMs: 3000 });
         if (p.errors.length) BAS.debug('skip-here A/V', p.errors);
         data = mergeProbe(data, p);
         const f = BAS.avSegment.findEnd(data, t);
@@ -347,6 +370,7 @@
         // probe targets are the candidates as the detectors produced them (A/V-closed ones are already done)
         state.avWanted = avWanted.concat(usable.filter((c) => AV.wants(c) && !(c.evidence && c.evidence.av)));
         if (avOn) usable = AV.apply(usable, state.av, s);
+        usable = AV.gate(usable, s);
       }
       const media = s.useMedia ? state.media : null;
       const out = BAS.fuse({ candidates: usable, duration: dur, boundaries: state.boundaries, media, overrides: state.overrides, settings: s });
@@ -395,12 +419,13 @@
   }
   /** Probe suspected segments one at a time in the background; each result re-runs fusion. */
   async function runAvProbes() {
-    if (state.avBusy || !avAvailable() || !state.video || state.status !== 'ready') return;
+    if (state.avBusy === state.runId || !avAvailable() || !state.video || state.status !== 'ready') return;
     const info = state.video, runId = state.runId, signal = state.abort ? state.abort.signal : undefined;
-    state.avBusy = true;
+    state.avBusy = runId;   // a loop of an older run may still be unwinding; it stops at its next check
     try {
       for (;;) {
         if (!state.video || state.video.cid !== info.cid || runId !== state.runId || !avAvailable()) break;
+        if (state.avBytes >= AV_MAX_BYTES) { BAS.debug('A/V budget used up for this video'); break; }
         const c = pickAvCandidate();
         if (!c) break;
         const k = BAS.avSegment.key(c);
@@ -414,13 +439,17 @@
         try {
           data = await BAS.mediaProbe.probe(info, t0, t1, { video: t1 - t0 <= AV_VIDEO_MAX_SPAN, signal });
         } catch (e) {
+          state.avBytes += (e && e.bytes) || 0;
           if (e && e.name === 'AbortError') break;
           BAS.debug('A/V probe failed', e);
           if (++state.avErrors >= 2) break;
           continue;
         }
-        if (runId !== state.runId || !state.video || state.video.cid !== info.cid) break;
+        state.avBytes += data.bytes || 0;
+        if (runId !== state.runId || !state.video || state.video.cid !== info.cid || !urlShowsVideo(info)) break;
         if (data.errors.length) BAS.debug('A/V probe', data.errors);
+        // nothing could be fetched or decoded: not a verdict (keep it out of the cache; retried on the next visit)
+        if (!data.audio.length && data.errors.length) { if (++state.avErrors >= 2) break; continue; }
         const step = state.heatAnalysis && state.heatAnalysis.step;
         const r = open ? BAS.avSegment.assessOpen(data, c.start)
           : BAS.avSegment.assess(data, c.start, c.end, { endRadius: c.source === 'heat' ? Math.max(8, Math.min(30, step || 8)) : undefined });
@@ -429,7 +458,10 @@
         applyFusion('av');
         if (state.cacheable) cacheResults(info);
       }
-    } finally { state.avBusy = false; }
+    } finally {
+      if (state.avBusy === runId) state.avBusy = null;
+      if (runId !== state.runId) setTimeout(runAvProbes, 0);   // the next video's loop may have been turned away
+    }
   }
   async function reloadOverrides() {
     const v = state.video;
@@ -447,12 +479,18 @@
     if (state.abort) { try { state.abort.abort(); } catch (e) { /* ignore */ } }
     state.abort = null;
   }
+  /** A/V verdicts of the current candidates only (keys drift as danmaku arrive), newest last. */
+  function avForCache() {
+    if (!BAS.avSegment) return [];
+    const live = new Set(state.avWanted.map(BAS.avSegment.key));
+    return Array.from(state.av.entries()).filter(([k]) => live.has(k)).slice(-20);
+  }
   function cacheResults(info) {
     BAS.storage.setCache(info.cid, {
-      version: BAS.VERSION, ts: Date.now(),
+      version: BAS.VERSION, ts: state.cacheTs || Date.now(),
       candidates: state.candidates.map(slimCandidate), boundaries: state.boundaries, viewPoints: state.viewPoints, stats: state.stats,
       heat: state.heat,
-      av: Array.from(state.av.entries()).slice(0, 20),
+      av: avForCache(),
     }).catch(() => {});
   }
 
@@ -468,7 +506,8 @@
     state.candidates = []; state.boundaries = []; state.viewPoints = []; state.segments = []; state.dropped = [];
     state.stats = { danmakuCount: 0, viewPoints: 0, cuts: 0, missingSegments: [] };
     state.heat = null; state.heatAnalysis = null;
-    state.av = new Map(); state.avWanted = []; state.avTried = new Set(); state.avErrors = 0; state.cacheable = false;
+    state.av = new Map(); state.avWanted = []; state.avTried = new Set(); state.avErrors = 0; state.avBytes = 0;
+    state.cacheable = false; state.cacheTs = 0;
     clearUi();
     sendBadge(0);
     try { state.skipper && state.skipper.reset && state.skipper.reset(); } catch (e) { /* ignore */ }
@@ -493,7 +532,7 @@
         if (cached.heat && BAS.detectHeat) { state.heat = cached.heat; state.heatAnalysis = BAS.detectHeat.analyse(cached.heat, info.duration); }
         state.stats = Object.assign(state.stats, cached.stats || {});
         if (Array.isArray(cached.av)) for (const e of cached.av) if (Array.isArray(e) && typeof e[0] === 'string' && e[1] && typeof e[1] === 'object') state.av.set(e[0], e[1]);
-        state.cacheable = true;
+        state.cacheable = true; state.cacheTs = cached.ts || Date.now();
         state.status = 'ready';
         applyFusion('cache');
         if (Date.now() - (cached.ts || 0) < CACHE_REFRESH_MS) return; // fresh enough
@@ -550,7 +589,7 @@
     applyFusion('detect');
     // Only complete results are cached; failures and partial danmaku are retried on the next visit.
     state.cacheable = !dm.error && !ch.error && !(dm.missing && dm.missing.length);
-    if (state.cacheable) cacheResults(info);
+    if (state.cacheable) { state.cacheTs = Date.now(); cacheResults(info); }
   }
 
   /** Keyword edits: re-run detectors on the danmaku already in memory instead of downloading everything again. */
@@ -567,7 +606,7 @@
       state.candidates = [].concat(ch.candidates || [], dm.candidates || []);
       state.boundaries = ch.boundaries || state.boundaries;
       applyFusion('keywords');
-      if (state.status === 'ready') cacheResults(info);
+      if (state.status === 'ready') { state.cacheTs = Date.now(); cacheResults(info); }
     } catch (e) { BAS.warn('re-detect failed', e); }
   }
   const redetectDebounced = debounce(redetectFromMemory, 1200);
@@ -604,12 +643,15 @@
   }
 
   /** Called synchronously on URL changes: never let the previous video's segments fire on the new one. */
+  function urlShowsVideo(v) {
+    const u = parseUrlIdentity();
+    const sameVideo = !!u && ((u.bvid && String(u.bvid) === String(v.bvid)) || (u.aid && Number(u.aid) === Number(v.aid)));
+    return sameVideo && Number(u.p || 1) === Number(v.p || 1);
+  }
   function disarmIfUrlChanged() {
     const v = state.video;
     if (!v) return;
-    const u = parseUrlIdentity();
-    const sameVideo = u && ((u.bvid && String(u.bvid) === String(v.bvid)) || (u.aid && Number(u.aid) === Number(v.aid)));
-    if (!sameVideo || Number(u.p || 1) !== Number(v.p || 1)) {
+    if (!urlShowsVideo(v)) {
       if (state.segments.length) { state.segments = []; clearUi(); sendBadge(0); }
     }
   }

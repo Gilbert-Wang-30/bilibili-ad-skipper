@@ -267,7 +267,8 @@
     const entry = Object.assign({}, extra, {
       segments: Array.isArray(data && data.segments) ? data.segments : [],
       candidates: Array.isArray(data && data.candidates) ? data.candidates : [],
-      ts: Date.now(),
+      // the orchestrator passes the detection time so that later A/V updates do not make stale results look fresh
+      ts: typeof extra.ts === 'number' && isFinite(extra.ts) && extra.ts <= Date.now() ? extra.ts : Date.now(),
       version: BAS.VERSION,
     });
     try { await set('local', { [cacheKey(cid)]: entry }); } catch (e) { BAS.warn('setCache failed', e); }
