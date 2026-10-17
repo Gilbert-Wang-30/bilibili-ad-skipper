@@ -2,7 +2,7 @@
 (() => {
   if (globalThis.BAS && globalThis.BAS.__loaded) return;
 
-  const VERSION = '0.3.0';
+  const VERSION = '0.4.0';
 
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
@@ -13,6 +13,7 @@
     useMedia: true,
     useAudio: false,
     useHeat: true,
+    useAvProbe: true,       // look-ahead audio/video check of suspected ads (37-av-segment.js)
     skipHereButton: true,   // control-bar button to skip an ad the detectors missed
     showMarkers: true,
     showToast: true,
@@ -177,7 +178,9 @@
     if (!s) return out;
     const dur = isFinite(duration) && duration > 0 ? duration : Infinity;
     const tt = isFinite(t) ? t : 0;
-    const minT = tt + 5, maxT = Math.min(dur, tt + 600);
+    // Targets in the last stretch of the video are "skip to the end" jokes (or the outro), never an ad's end.
+    const endGuard = isFinite(dur) ? Math.max(20, 0.03 * dur) : 0;
+    const minT = tt + 5, maxT = Math.min(dur - endGuard, tt + 600);
     const seen = new Set();
     const push = (v, kind, fmt, weak) => {
       if (v == null || !isFinite(v)) return;

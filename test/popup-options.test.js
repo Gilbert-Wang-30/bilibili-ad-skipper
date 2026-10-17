@@ -39,7 +39,7 @@ Deno.test('popup.html has the required controls', () => {
 });
 
 Deno.test('options.html has a control for every setting', () => {
-  const defaults = { enabled: 1, mode: 1, minConfidence: 1, useChapters: 1, useDanmaku: 1, useMedia: 1, useAudio: 1, useHeat: 1, skipHereButton: 1, showMarkers: 1, showToast: 1, toastDurationMs: 1, landingOffsetSec: 1, extraStartKeywords: 1, extraEndKeywords: 1, ignoreUps: 1, debug: 1 };
+  const defaults = { enabled: 1, mode: 1, minConfidence: 1, useChapters: 1, useDanmaku: 1, useMedia: 1, useAudio: 1, useHeat: 1, useAvProbe: 1, skipHereButton: 1, showMarkers: 1, showToast: 1, toastDurationMs: 1, landingOffsetSec: 1, extraStartKeywords: 1, extraEndKeywords: 1, ignoreUps: 1, debug: 1 };
   for (const k of Object.keys(defaults)) assert(new RegExp(`name="${k}"`).test(OPTIONS_HTML), 'missing control for ' + k);
   assert(/name="minConfidence" min="0.3" max="0.9" step="0.05"/.test(OPTIONS_HTML));
   assert(/name="landingOffsetSec" min="-5" max="10"/.test(OPTIONS_HTML));

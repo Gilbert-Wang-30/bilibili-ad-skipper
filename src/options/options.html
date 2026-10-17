@@ -48,6 +48,10 @@
           <span class="lbl">播放热度（高能进度条）<small>大量观众拖动跳过广告时，热度曲线会在广告结尾形成陡峭的峰值。用于确认弹幕结果（未登录时弹幕较少，效果尤其明显）；仅凭热度只显示手动跳过按钮。</small></span>
         </label>
         <label class="row">
+          <input type="checkbox" name="useAvProbe">
+          <span class="lbl">音视频预读核验<small>对每个疑似广告，提前下载视频自己的低码率音轨和 360p 画面（只取那一段，约 2–5 MB），比较响度、响度起伏、亮度和频谱：广告通常更响、更平稳、更亮。不像广告的（乱指路、「名场面」空降、剧情跳过）只提示不自动跳过；像广告的提高置信度，并把结尾对齐到真实的转场（静音 + 切镜）。「跳过广告」按钮也用它找结尾。只在本机计算，不上传任何数据。</small></span>
+        </label>
+        <label class="row">
           <input type="checkbox" name="useMedia">
           <span class="lbl">画面突变对齐<small>低频采样画面亮度直方图，把弹幕估计的边界吸附到最近的镜头切换处，使跳转更精确。</small></span>
         </label>

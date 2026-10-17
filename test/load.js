@@ -12,6 +12,8 @@ const PURE_MODULES = [
   '31-detect-danmaku.js',
   '34-detect-heat.js',
   '35-skip-here.js',
+  '36-media-probe.js',
+  '37-av-segment.js',
   '33-fusion.js',
   '40-skipper.js',
 ];
@@ -64,4 +66,19 @@ export function hasFullFixtures() {
 /** Public chapter-only fixture (uploader chapter list, no danmaku). */
 export function loadChapterFixture(bvid) {
   return JSON.parse(Deno.readTextFileSync(new URL(`./fixtures/public/${bvid}.chapters.json`, here)));
+}
+
+/** Private A/V feature windows (test/fixtures-full/av/, numbers computed from the video's own streams; not distributed). */
+export function hasAvFixtures() {
+  try { for (const e of Deno.readDirSync(new URL('./fixtures-full/av/', here))) if (e.isFile && e.name.endsWith('.json')) return true; } catch (_) { /* missing */ }
+  return false;
+}
+/** Loads one exported window and converts its column arrays back to the probe's frame objects. */
+export function loadAvFixture(name) {
+  const d = JSON.parse(Deno.readTextFileSync(new URL(`./fixtures-full/av/${name}.json`, here)));
+  return {
+    t0: d.t0, t1: d.t1, duration: d.duration,
+    audio: d.audio.map((r) => ({ t: r[0], db: r[1], centroid: r[2], flatness: r[3], flux: r[4] / 1000, zcr: r[5] })),
+    video: d.video.map((r) => ({ t: r[0], mean: r[1], std: r[2], sat: r[3], colorful: r[4], edge: r[5], cut: r[6], drift: r[7] })),
+  };
 }

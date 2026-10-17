@@ -122,7 +122,8 @@
         if (ms > t + 5 && (!(duration > 0) || ms <= duration)) sec = ms;
         else if (duration > 0 && v > t + 5 && v <= duration) sec = v;
       }
-      if (sec != null && sec > t + 5 && sec - t <= 600) targets.unshift({ target: Math.round(sec * 10) / 10, kind: 'abs', fmt: 'airborne', weak: false, poi: P.poi.test(norm) });
+      const endGuard = duration > 0 ? Math.max(20, 0.03 * duration) : 0;   // "skip to the end" jokes
+      if (sec != null && sec > t + 5 && sec - t <= 600 && !(duration > 0 && sec > duration - endGuard)) targets.unshift({ target: Math.round(sec * 10) / 10, kind: 'abs', fmt: 'airborne', weak: false, poi: P.poi.test(norm) });
     }
     res.targets = targets;
     res.poi = P.poi.test(norm) || targets.some((x) => x.poi);

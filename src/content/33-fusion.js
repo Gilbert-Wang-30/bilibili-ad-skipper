@@ -193,9 +193,10 @@
     for (const c of cands) {
       if (c.source !== 'danmaku') { resolved.push(c); continue; }
       const origStart = c.start, origEnd = c.end;
-      // Ids are derived from the detector's own estimate so re-snapping (new media cuts) keeps them stable.
-      c._id0 = origStart; c._id1 = origEnd;
-      const s = snap(c.start, boundaries, media);
+      // Ids are derived from the detector's own estimate so re-snapping (new media cuts, A/V refinement) keeps them stable.
+      c._id0 = isFinite(c.idStart) ? c.idStart : origStart; c._id1 = isFinite(c.idEnd) ? c.idEnd : origEnd;
+      // Edges measured by the A/V look-ahead (37-av-segment.js) are more precise than a chapter boundary or a live cut.
+      const s = c.lockStart ? { t: c.start, by: 'av' } : snap(c.start, boundaries, media);
       let newStart = s.t;
       let newEnd = c.end, endBy = null;
       if (c.end === null) {
@@ -208,7 +209,7 @@
           continue;
         }
       } else {
-        const e = snap(c.end, boundaries, media);
+        const e = c.lockEnd ? { t: c.end, by: 'av' } : snap(c.end, boundaries, media);
         newEnd = e.t; endBy = e.by;
       }
       // A snap must not collapse the segment; revert the end, else the start, else both.
@@ -256,9 +257,9 @@
     const minConf = isFinite(settings.minConfidence) ? settings.minConfidence : BAS.DEFAULT_SETTINGS.minConfidence;
     const segments = merged.map((c) => {
       const seg = Object.assign({}, c);
-      const a = isFinite(seg._id0) ? seg._id0 : seg.start;
-      const b = isFinite(seg._id1) && seg._id1 !== null ? seg._id1 : seg.end;
-      delete seg._id0; delete seg._id1;
+      const a = isFinite(seg._id0) ? seg._id0 : isFinite(seg.idStart) ? seg.idStart : seg.start;
+      const b = isFinite(seg._id1) && seg._id1 !== null ? seg._id1 : isFinite(seg.idEnd) ? seg.idEnd : seg.end;
+      delete seg._id0; delete seg._id1; delete seg.idStart; delete seg.idEnd; delete seg.lockStart; delete seg.lockEnd;
       seg.id = String(seg.source)[0] + ':' + Math.round(a) + '-' + Math.round(b);
       seg.autoSkip = seg.confidence >= minConf && !seg.offerOnly;
       seg.enabled = c.enabled !== false;

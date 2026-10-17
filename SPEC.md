@@ -42,6 +42,13 @@ Chrome MV3 extension that detects and skips in-video sponsored segments (恰饭/
   * Anonymous (no cookie) requests from outside the browser get HTTP 412. Not our concern in-extension.
 * Content scripts' `fetch` is subject to page CORS; api.bilibili.com allows `*.bilibili.com` origins with
   credentials, so direct fetch from the content script works. Background fetch (host_permissions) is the fallback.
+* Media: `GET https://api.bilibili.com/x/player/wbi/playurl?bvid=&cid=&qn=16&fnval=4048&fnver=0&fourk=0` (WBI-signed) →
+  `data.dash.{audio,video}[]` with `baseUrl`/`backupUrl`, `codecs` (`mp4a.40.2`; `av01.…`, `avc1.…`, `hev1.…`),
+  `bandwidth`, `width/height` and `segment_base {initialization:'0-836', index_range:'837-6780'}`. Each stream is one
+  fragmented MP4: init (moov) + a `sidx` listing ~5 s fragments (moof+mdat) with byte offsets. The upos CDN answers
+  `Range` requests from the page origin with 206 and CORS, so any time window can be fetched without new permissions.
+  The lowest audio is ~65 kbps (8 KB/s), the 360p video ~125 kbps (16 KB/s). `decodeAudioData` accepts init + fragments;
+  WebCodecs `VideoDecoder` decodes AV1/AVC 360p at ~40× real time.
 
 ## 2. File layout
 
@@ -58,6 +65,10 @@ src/content/22-api.js             BAS.api.*
 src/content/30-detect-chapters.js BAS.detectChapters()
 src/content/31-detect-danmaku.js  BAS.detectDanmaku()
 src/content/32-media.js           BAS.MediaAnalyzer
+src/content/34-detect-heat.js     BAS.detectHeat (§7.5)
+src/content/35-skip-here.js       BAS.findAdEnd (§7.6)
+src/content/36-media-probe.js     BAS.mp4 / BAS.avFeatures (pure) + BAS.mediaProbe (network, decoders) (§7.7)
+src/content/37-av-segment.js      BAS.avSegment (pure judgement) (§7.7)
 src/content/33-fusion.js          BAS.fuse()
 src/content/40-skipper.js         BAS.Skipper
 src/content/41-ui.js              BAS.ui
@@ -280,6 +291,8 @@ Step E — merge overlapping candidates (keep the higher confidence, union the r
 2. Chapter candidates are authoritative: any danmaku candidate overlapping a chapter candidate (> 40 % of itself) is merged into it (sources += 'danmaku').
 3. For danmaku candidates: snap `start` to the nearest chapter `boundary` within 10 s; else to the strongest `media.nearestCut(start, 4)`.
    Snap `end` similarly (boundary within 10 s, else cut within 4 s). If `end === null`: use the next chapter boundary after start if it is within 300 s (confidence 0.5), else drop the candidate (keep it in `diagnostics.dropped`).
+   Edges with `lockStart` / `lockEnd` (measured by the A/V look-ahead, §7.7) are not snapped; ids use `idStart` / `idEnd`
+   (the detector's own estimate) when present, so a refinement never changes a segment's id.
 4. Apply overrides: `ignore` ranges remove any segment overlapping them (> 50 %); `add` ranges become `source:'user', confidence:1`.
 5. Clip to `[0, duration − 1]`, drop `end − start < 5`, merge overlaps (union; max confidence; union sources), sort.
 6. `id = source[0] + ':' + Math.round(start) + '-' + Math.round(end)`; `autoSkip = confidence ≥ settings.minConfidence && !offerOnly`; `enabled = true`.
@@ -322,6 +335,47 @@ The toast offers 撤销 (seek back) and 记住 (store `[start estimate, end]` as
 mid / late in the 7 ads land within 10 s every time (16/21 within 3 s) at full density; with 1/10 of the danmaku 18/21
 within 3 s; with heat only ±17 s.
 
+When the A/V look-ahead is on (§7.7) and the press is not inside a known segment, the media after the press is analysed
+first (`[t−25, t+130]`, then `[t+115, t+300]`, at most 10 s): the first transition with end-likeness ≥ 2.0 wins
+(source `'av'`). Measured: 35 presses early/mid/late in the 7 ads land −2.1 … +0.2 s from the real end.
+
+### 7.7 Audio/video look-ahead — `BAS.mediaProbe` (36) + `BAS.avSegment` (37)
+
+**Probe.** `probe(info, t0, t1, {video, fps, signal})` gets the manifest (§1, cached 50 min per cid), the init + sidx of the
+lowest-bitrate AAC track and of the cheapest ≤ 480p video track the browser's `VideoDecoder` supports, fetches the
+fragments covering the window in one ranged request per track and decodes them: audio with `decodeAudioData` into a
+16 kHz mono `OfflineAudioContext` (WebCodecs `AudioDecoder` fallback), video with a minimal fMP4 demuxer (moof/traf/
+trun → samples) and `VideoDecoder` (back-pressure on the `dequeue` event; `setTimeout` is clamped in background tabs).
+Features: audio every 0.25 s over a 0.5 s window (`db` RMS, spectral centroid / flatness / flux, zcr, 16 log-mel bands);
+video ≤ 4 rows/s plus one at every hard cut, each frame drawn at 48×27 (`mean` luma, `std`, saturation, colourfulness,
+edge density, 8-bin hue; `cut` = largest frame-to-frame mean |Δluma| since the previous row, `drift` = change vs the
+previous row). Nothing is stored. A 190 s window costs ~4.5 MB and 4–10 s.
+
+**Judgement** (pure, 1 s blocks of `db`, `dbsd` (loudness spread within the second), `flux`, `luma`):
+* `score(inside, outside) = z(db) − z(dbsd) + 0.3·clamp(z(luma), −1, 3) + 0.3·clamp(z(flux), −2, 2)` with z = Cohen's d.
+  Segment score = inside `[s+2, e−2]` vs `[s−45, s−1] ∪ [e+1, e+45]`. Measured: 7 ads ≥ 1.79 with boundaries ±5 s off;
+  ad-length (60–130 s) content slices ≤ 1.2 (p99 0.85); story skip −0.1, benchmark skip 0.0, intros ≤ 0.4.
+* Verdict: `ad` when score ≥ 1.4 (≥ 60 s), 1.8 (40–60 s), 2.4 (25–40 s), never below 25 s; `notAd` when ≤ 0.6 and ≥ 30 s;
+  else `unsure`; `unknown` without data.
+* Transition = a local audio minimum ≤ −26 dB and ≥ 9 dB under the ±5 s median, paired with a cut (`cut` > 30 or
+  `drift` > 60) within 0.9 s (audio-only: the dip itself). Inside-ad transitions score < 1.2 on end-likeness, true ends
+  ≥ 2.8, content transitions < 2.0 (0 / 138, p99 1.48).
+* `refineEnd`: best transition within ±8 s (±step for heat offers) whose 12 s before/after sides score ≥ 1.5, weighted by
+  dip depth and cut strength minus a distance penalty. `refineStart`: only within [−0.5, +3] s of the estimate and side
+  score ≥ 2.0 (segues hide the cut, and an earlier start would cut content).
+* `findEnd(data, t)`: first transition after t + 3 whose end-likeness (inside `[max(t−20, p−60), p]` vs the 15 s after) is
+  ≥ 2.0, best within 3 s of it; `{pending}` when the data ends first.
+* `assessOpen(data, s)` for a danmaku start without an end: `findEnd(data, s + 20)` over `[s−45, s+260]`, then `assess`.
+* `apply(candidates, results, settings)`: `notAd` → confidence capped at `minConfidence − 0.05` (offer only); otherwise
+  refined edges replace the estimates (`lockStart/lockEnd`, `idStart/idEnd`); `ad` → +0.25 (cap 0.9) when there is
+  independent evidence (≥ 1 target, strong end, ad vocabulary or heat; heat offers stay offers) and `sources += 'media'`.
+  An open-ended danmaku start whose span is `ad` gets the A/V end and the boost if the cluster has ad vocabulary or a target.
+
+**Orchestration.** After each fusion the orchestrator probes, one at a time in the background, up to 4 candidates per
+video that are not yet past (auto-skip candidates first, then offers; spans ≤ 420 s; video only for windows ≤ 330 s).
+Each result re-runs fusion and is cached with the detection results (`av: [[key, verdict]]`). Setting `useAvProbe`
+(default true).
+
 ## 8. Skipper — `new BAS.Skipper(video, opts)`
 
 `opts = { getSegments: () => Segment[], getSettings: () => settings, onSkip(seg, from), onEnter(seg), onLeave(seg) }`
@@ -354,6 +408,7 @@ within 3 s; with heat only ±17 s.
    * in parallel: `getPlayerInfo` → `detectChapters`; `getDanmaku` (with bridge-preloaded segments) → `detectDanmaku`.
    * `fuse` → `segments`; `ui.renderMarkers`; `skipper` segments updated; cache; badge message to background `{type:'BAS_BADGE', count}`.
    * MediaAnalyzer attached if `useMedia||useAudio`; on each new cut within 6 s of any segment boundary → debounce 500 ms → re-`fuse` + re-render (do not re-run detectors).
+   * A/V look-ahead of suspected segments in the background (§7.7); each verdict → re-`fuse` + re-render + cache.
 4. Skip flow: `onSkip` → toast `'已跳过广告 ' + fmtTime(from) + ' → ' + fmtTime(seg.end) + '（' + reason + '）'` with action `撤销`; undo → `skipper.undo()` + `storage.addIgnore` (so a refresh respects it).
    `onEnter` (manual / low confidence) → `showSkipButton`; `onLeave` → hide.
 5. Messages from popup (`chrome.runtime.onMessage`): `BAS_GET_STATE`, `BAS_SET_SEGMENT_ENABLED {id, enabled}`, `BAS_SEEK {t}`, `BAS_RESCAN`,

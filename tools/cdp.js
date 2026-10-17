@@ -83,7 +83,17 @@ switch (cmd) {
       await new Promise((r) => setTimeout(r, 300));
       if (cmd === 'contexts') { out(contexts.map((c) => ({ id: c.id, name: c.name, origin: c.origin, aux: c.auxData }))); return; }
       const extId = Deno.env.get('BAS_EXT_ID') || '';
-      const ctx = contexts.find((c) => extId && ((c.origin || '').includes(extId) || (c.name || '').includes(extId))) || contexts.find((c) => c.auxData && c.auxData.type === 'isolated') || contexts.find((c) => c.auxData && c.auxData.isDefault === false);
+      // After an extension reload the page can hold several worlds with the same name: newest one that has BAS wins.
+      const isolated = contexts.filter((c) => (extId && ((c.origin || '').includes(extId) || (c.name || '').includes(extId))) || (c.auxData && (c.auxData.type === 'isolated' || c.auxData.isDefault === false)))
+        .sort((a, b) => b.id - a.id);
+      let ctx = null;
+      for (const c of isolated) {
+        try {
+          const probe = await s.send('Runtime.evaluate', { contextId: c.id, expression: "typeof BAS !== 'undefined' && !!BAS.state", returnByValue: true });
+          if (probe.result && probe.result.value === true) { ctx = c; break; }
+        } catch (e) { /* context gone */ }
+      }
+      ctx = ctx || isolated[0];
       if (!ctx) { out({ error: 'no isolated world found', contexts: contexts.map((c) => c.name) }); return; }
       const r = await s.send('Runtime.evaluate', { contextId: ctx.id, expression: wrapExpr(expression), awaitPromise: true, returnByValue: true, timeout: 60000 });
       if (r.exceptionDetails) out({ error: r.exceptionDetails.text, detail: r.exceptionDetails.exception && r.exceptionDetails.exception.description });

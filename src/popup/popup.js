@@ -13,6 +13,7 @@
     useMedia: true,
     useAudio: false,
     useHeat: true,
+    useAvProbe: true,
     skipHereButton: true,
     showMarkers: true,
     showToast: true,

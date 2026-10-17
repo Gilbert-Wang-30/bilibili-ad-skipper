@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Bilibili Ad Skipper (恰饭跳过)",
-  "version": "0.3.0",
-  "description": "自动检测并跳过 B 站视频中的植入广告（恰饭）。基于 UP 主章节、弹幕（空降/感谢）和音视频突变三种信号。",
+  "version": "0.4.0",
+  "description": "自动检测并跳过 B 站视频中的植入广告（恰饭）。基于 UP 主章节、弹幕（空降/感谢）、播放热度和音视频预读核验。",
   "minimum_chrome_version": "111",
   "permissions": [
     "storage"
@@ -65,6 +65,8 @@
         "src/content/32-media.js",
         "src/content/34-detect-heat.js",
         "src/content/35-skip-here.js",
+        "src/content/36-media-probe.js",
+        "src/content/37-av-segment.js",
         "src/content/33-fusion.js",
         "src/content/40-skipper.js",
         "src/content/41-ui.js",
