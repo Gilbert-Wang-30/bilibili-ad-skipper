@@ -369,17 +369,23 @@ chosen by its short side (≤ 480) so portrait videos keep their picture; `bytes
 * Transition = a local audio minimum ≤ −26 dB and ≥ 9 dB under the ±5 s median, paired with a cut (`cut` > 30 or
   `drift` > 60) within 0.9 s (audio-only: the dip itself). Inside-ad transitions score < 1.2 on end-likeness, true ends
   ≥ 2.8, content transitions < 2.0 (0 / 138, p99 1.48).
-* `refineEnd`: best transition within ±8 s (±step for heat offers) whose 12 s before/after sides score ≥ 1.5, weighted by
+* `refineEnd` (applied only to the end of an open-ended start; closed candidates keep their edges): best transition from
+  8 s before to 1 s after the estimate whose 12 s before/after sides score ≥ 1.5, weighted by
   dip depth and cut strength minus a distance penalty. `refineStart`: only within [−0.5, +3] s of the estimate and side
   score ≥ 2.0 (segues hide the cut, and an earlier start would cut content).
 * `findEnd(data, t)`: first transition after t − 3 (one the press has just passed is returned too; skip-here then
   reports the ad is over) whose end-likeness (inside `[max(t−20, p−60), p]` vs the 15 s after) is
   ≥ 2.0, best within 3 s of it; `{pending}` when the data ends first.
 * `assessOpen(data, s)` for a danmaku start without an end: `findEnd(data, s + 20)` over `[s−45, s+260]`, then `assess`.
-* `apply(candidates, results, settings)`: `notAd` → confidence capped at `minConfidence − 0.05` (offer only); otherwise
-  refined edges replace the estimates (`lockStart/lockEnd`, `idStart/idEnd`); `ad` → +0.25 (cap 0.9) when there is
-  independent evidence (≥ 1 target, strong end, ad vocabulary or heat; heat offers stay offers) and `sources += 'media'`.
-  An open-ended danmaku start whose span is `ad` gets the A/V end and the boost if the cluster has ad vocabulary or a target.
+* `apply(candidates, results, settings)`: only an `ad` verdict acts. A candidate whose danmaku are ad-specific (ad vocabulary
+  ≥ 0.4 or a landing-thanks end) gets +0.25 (cap 0.9, never for offers) and `sources += 'media'`. `notAd` / `unsure` are
+  recorded in `evidence.av` only, and the edges of closed candidates are left as the detectors gave them. An open-ended
+  danmaku start whose span is `ad` gets the A/V end (`lockEnd`, `idStart/idEnd`) and the boost if its danmaku are ad-specific.
+  Measured on the BilibiliSponsorBlock set (README "Crowd-labelled test"):
+  - The old `notAd` veto blocked 26 real ads for 1 control video; a third of the real ads judged were `notAd`.
+  - Edge snapping changed as many ends for the worse as for the better.
+  - Without the ad-specific rule, `ad` verdicts on intro/OP candidates (pure 空降 clusters) added control auto-skips.
+  - Thresholds 1.2–1.4 gave the same +13 hits and no false ones; 1.0 added a false one.
 
 **Orchestration.** After each fusion the orchestrator probes, one at a time in the background, up to 4 candidates per
 video that are not yet past (auto-skip candidates first, then offers; spans ≤ 420 s; video only for windows ≤ 330 s).
@@ -398,7 +404,8 @@ since A/V refinement can move edges under the same id.
 End zone (detector R14): targets past `duration − max(8 s, 1 %)` are dropped ("skip to the end" jokes, also on the
 airborne path); a danmaku segment ending after `duration − max(20 s, 3 %)` is capped at 0.55 (`evidence.endZone`, kept in
 the cache). `BAS.avSegment.gate` runs after every boost (heat corroboration included) and caps such a segment at
-`minConfidence − 0.05` unless its A/V verdict is `ad`.
+`minConfidence − 0.05` unless its A/V verdict is `ad` with score ≥ 3 and its danmaku are ad-specific (a 2.55 'ad' was a
+joke video's real ending).
 
 Skipper suppressions after a refinement: a segment the viewer chose to watch (user seek / undo) is judged by its
 current range; an auto-skip keeps the range it skipped, so an end that moved later is skipped as well.

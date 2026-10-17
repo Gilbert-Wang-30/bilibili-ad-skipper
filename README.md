@@ -14,7 +14,7 @@ Five independent signals are fused into time segments with a confidence score:
 | **Chapters (章节 / 视频看点)** | Uploader chapters from the player API whose title says 广告 / 恰饭 / 赞助 / 推广 / 商单 … | 0.95 |
 | **Danmaku (弹幕)** | All danmaku of the video (same protobuf API the player uses). Clusters of *ad announcements* (恰饭了, 广告来了, 零帧起手, 感谢金主…), *jump cues* (空降 6:00, 跳伞04:50, 745工程, 坐标609, 向右20下 …) and *landing thanks* (欢迎回来, 空降成功, 感谢609工程 …). The median of agreeing jump targets gives the end; thanks clusters confirm it. | 0.2 – 1.0 |
 | **Viewer heat (高能进度条)** | The player's own viewer-activity curve (about 100 samples per video, served without login). When many viewers drag past an ad, the curve ramps up across it, peaks at its end and falls off a cliff. A danmaku segment that matches gets +0.2 confidence, which lets thin danmaku (e.g. signed out) still auto-skip. On popular videos it also blocks auto-skips that have no 空降 coordinates when the curve shows no skipping. Alone, it only offers a manual skip button. | confirmation |
-| **Audio / video look-ahead** | For every suspected segment, *before you reach it*, the extension downloads just that stretch (plus 45 s around it) of the video's own lowest-bitrate audio track and its 360p picture, using the byte index every bilibili stream carries (about 4–12 MB per segment, at most 60 MB per video), decodes it in the page (`decodeAudioData`, WebCodecs) and compares the inside with the surroundings. Sponsored reads are **louder**, their loudness is **steadier** (narration over music, no pauses), and they are usually **brighter**; ordinary content is not. A segment that does not look like an ad is never auto-skipped, one that does gets +0.25 confidence, and its end is moved to the real transition (a short silence together with a hard cut). It also finds the end for danmaku that only announce an ad's start. | confirmation, veto, boundaries |
+| **Audio / video look-ahead** | For every suspected segment, *before you reach it*, the extension downloads just that stretch (plus 45 s around it) of the video's own lowest-bitrate audio track and its 360p picture, using the byte index every bilibili stream carries (about 4–12 MB per segment, at most 60 MB per video), decodes it in the page (`decodeAudioData`, WebCodecs) and compares the inside with the surroundings. Many sponsored reads are **louder**, **steadier** (narration over music, no pauses) and **brighter** than the video around them. When a segment clearly is, and its danmaku name an ad (恰饭 / 广告 … or landing thanks), it gets +0.25 confidence. That lifts thin-danmaku ads to auto-skip. It also finds the end for danmaku that only announce an ad's start. It never blocks a segment: on crowd-labelled ads a third of the real ones looked no different from their surroundings. | confirmation, open-ended ends |
 | **Live frame cuts** | While the video plays, low-resolution frame differences (and optionally the audio level/spectrum via `captureStream`, never re-routing playback) record hard cuts. Cuts within a few seconds of a boundary that the look-ahead did not already fix snap it to the exact frame. | refinement only |
 
 Rules that keep false positives down (all learned from 50 real videos, see `test/fixtures/expected.json`):
@@ -24,10 +24,10 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
 * Opening skips ("跳伞04:50" posted at 0:00, "正片2:00", "省流 跳转4:00") are shown as an **offer** (a skip button and a dashed marker) but never skipped automatically.
 * Jump targets into the very end of a video (the last 1 %, at least 8 s) are ignored: those are "skip to the end"
   jokes. A segment that ends in the last 3 % (at least 20 s) may be an ad before a short outro, or a joke. It is only
-  skipped automatically once the audio/video check confirms it.
-* Crowds also post coordinates for things that are not ads: a famous moment (名场面), the good part, the end of a boring
-  stretch. The audio/video look-ahead checks every such segment; if the skipped stretch sounds and looks like the rest of
-  the video it is kept as an offer only (`· 音视频不像广告` in the popup).
+  skipped automatically when the audio/video check strongly confirms it and its danmaku name an ad.
+* Crowds also post coordinates for things that are not ads: a famous moment (名场面), the good part, an intro or OP song.
+  Bare coordinates never get the audio/video boost (intros look and sound like ads to it), so such a cluster needs the
+  same agreement as before to auto-skip. On 374 crowd-labelled videos no auto-skip landed on content nobody had marked.
 
 ## Privacy
 
@@ -149,21 +149,46 @@ and three opening skips):
 | | result |
 |---|---|
 | Measured ads confirmed, with the boundaries handed to it 2–6 s off | 7 / 7 |
-| Ad end after refinement (real end − refined) | −2.1 … +0.2 s |
+| Ad end found from the media (open-ended danmaku starts, skip button) | −2.1 … +0.2 s from the real end |
 | Content slices confirmed as an ad (audio + video / audio only) | 0 / 5 726 and 0 / 5 728; of the 632 ad-length (60–130 s) ones, 585 are refuted |
-| Story skip, benchmark skip, opening skips confirmed as an ad | 0 / 5 (story skip refuted) |
+| Story skip, benchmark skip, opening skips confirmed as an ad | 0 / 5 |
 | Skip-button presses at every second inside an ad: landing vs the real end | −2.1 … +0.2 s (687 presses) |
-| Live check on bilibili (2026-10-17) | 7 / 7 ads auto-skipped, ends −2.1 … +0.2 s; the thin-danmaku ad that used to be offer-only is now skipped; story skip and opening skip refuted |
+| Live check on bilibili (v0.4.1, 2026-10-17) | measured ads auto-skipped (ends from the danmaku, e.g. 1.2 s late on BV1jCJs6UE9S); the thin-danmaku ad gets its end from the media; an intro the media calls ad-like stays a button |
 | Cost per suspected segment | 4–12 MB (audio ≈ 66 kbps + 360p video 125–400 kbps depending on the codec), 4–10 s in the background; at most 60 MB per video |
+
+### Crowd-labelled test (BilibiliSponsorBlock, 2026-10-17)
+
+The public dump of [BilibiliSponsorBlock](https://github.com/hanydd/BilibiliSponsorBlock) (crowd-marked segments of
+~300 000 bilibili videos) gives labels at scale. Test set: 290 videos with a sponsor segment other users confirmed
+(votes ≥ 2), 305 ads in total, plus 84 control videos where people marked other things (intro, outro …) but never a
+sponsor. Inputs were fetched **signed out** (median 492 danmaku per video; a signed-in viewer gets several times more),
+so this is the extension's worst case. A hit is an auto-skip overlapping the label with IoU ≥ 0.4.
+
+| | danmaku | + heat | + heat + audio/video |
+|---|---|---|---|
+| Ads auto-skipped | 69 / 305 (22.6 %) | 74 / 305 (24.3 %) | **87 / 305 (28.5 %)** |
+| … with < 300 / 300–1000 / > 1000 danmaku | 14 % / 21 % / 41 % | 13 % / 22 % / 50 % | 17 % / 27 % / 52 % |
+| Ads at least offered (skip button) | 37 % | 39 % | 39 % |
+| Auto-skips on content nobody labelled | 0 / 69 | 0 / 74 | 0 / 87 |
+| Control videos with an auto-skip | 2 / 84 | 3 / 84 | 3 / 84 (all on ranges users marked as intro / outro) |
+| Start vs label, median | 3.1 s late | 3.1 s late | 3.0 s late |
+| End vs label, median / p90 of the error | 0 / 2.2 s | 0 / 2.8 s | 0 / 4.2 s |
+
+Most misses (176 of 305) have no signal at all in the signed-out danmaku. This test also changed the audio/video
+rules. The first look-ahead version (v0.4.0) also vetoed segments that did not look like ads. That veto blocked real ads,
+and it made that version worse than no look-ahead: 58 instead of 87 ads. Snapping ends to a transition also made as many
+ends worse as better against the crowd. To rerun the test: `tools/bsb-prepare.py`, `tools/bsb-collect.py` and
+`tools/eval-bsb.js`. The labels and collected inputs stay local; they are third-party data.
 
 ## Limitations
 
 * Danmaku-based detection needs viewers to have reacted; very new or unpopular videos may have no usable danmaku.
   Logged-in users receive far more danmaku than anonymous ones.
-* Starts come from crowd timing (the uploader usually segues into an ad while talking, so the picture and sound give
-  no clean cut there): a skip can start up to ~3 s late or ~2 s early. Ends are measured from the media.
-* The look-ahead was calibrated on 7 sponsored reads from four channels. An ad that is no louder, steadier or brighter
-  than the video around it (e.g. a game sponsor shown with gameplay) is "undecided": it neither helps nor blocks.
+* Boundaries come from crowd timing: a skip typically starts ~3 s after the crowd-labelled start (the segue into the
+  ad plays) and ends within a couple of seconds of the labelled end.
+* The audio/video check only confirms: about a quarter of real ads are clearly louder, steadier and brighter than their
+  surroundings; the rest are left to the danmaku. Intros and OP songs look the same to it, so bare 空降 coordinates
+  never get its boost.
 * Only verified on a handful of channels' audiences (小约翰可汗, 半佛仙人, 极客湾, 影视飓风); other communities' conventions
   are parsed but untested.
 * Only `www.bilibili.com/video/*` (plus `/list/*`, `/festival/*`) pages; bangumi/live are out of scope.

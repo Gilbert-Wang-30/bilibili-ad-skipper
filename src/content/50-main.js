@@ -348,44 +348,13 @@
     const s = settings();
     const dur = state.video.duration || (state.videoEl && state.videoEl.duration) || 0;
     try {
-      // Danmaku clusters without a determinable end are sponsor chatter, not skippable segments: keep them out of the
-      // progress bar (fusion would otherwise stretch them to the next chapter boundary) but list them for the popup.
-      const isOpen = (c) => c.source === 'danmaku' && (c.end == null || !isFinite(c.end));
-      let openEnded = state.candidates.filter(isOpen);
-      let usable = state.candidates.filter((c) => !isOpen(c));
-      const AV = BAS.avSegment;
-      const avOn = !!AV && s.useAvProbe !== false && state.av.size > 0;
-      const avWanted = AV ? openEnded.filter(AV.wants) : [];
-      // The A/V look-ahead can supply the end of a danmaku start cluster that has none (thin danmaku).
-      if (avOn) {
-        const closed = AV.apply(openEnded, state.av, s);
-        usable = usable.concat(closed.filter((c) => !isOpen(c)));
-        openEnded = closed.filter(isOpen);
-      }
-      if (BAS.detectHeat && s.useHeat !== false && state.heatAnalysis) {
-        usable = BAS.detectHeat.corroborate(usable, state.heatAnalysis, s);
-        usable = usable.concat(BAS.detectHeat.offers(usable, state.heatAnalysis, s));
-      }
-      if (AV) {
-        // probe targets are the candidates as the detectors produced them (A/V-closed ones are already done)
-        state.avWanted = avWanted.concat(usable.filter((c) => AV.wants(c) && !(c.evidence && c.evidence.av)));
-        if (avOn) usable = AV.apply(usable, state.av, s);
-        usable = AV.gate(usable, s);
-      }
       const media = s.useMedia ? state.media : null;
-      const out = BAS.fuse({ candidates: usable, duration: dur, boundaries: state.boundaries, media, overrides: state.overrides, settings: s });
-      const segs = Array.isArray(out) ? out.slice() : ((out && out.segments) || []).slice();
-      const diag = (out && out.diagnostics) || {};
-      const dropped = [];
-      for (const d of diag.dropped || (out && out.dropped) || []) {
-        if (d.dropReason === '用户已忽略' && isFinite(d.start) && isFinite(d.end) && d.end > d.start) {
-          // Keep ignored segments visible (dimmed) so the user can restore them from the popup.
-          const id = String(d.source || 'd')[0] + ':' + Math.round(d.start) + '-' + Math.round(d.end) + ':ignored';
-          segs.push(Object.assign({}, d, { id, enabled: false, ignored: true, autoSkip: false }));
-        } else dropped.push(d);
-      }
-      for (const c of openEnded) dropped.push(Object.assign({}, c, { dropReason: '无法确定结束时间' }));
-      segs.sort((a, b) => a.start - b.start);
+      const r = BAS.buildSegments({
+        candidates: state.candidates, duration: dur, boundaries: state.boundaries, heatAnalysis: state.heatAnalysis,
+        av: state.av, media, overrides: state.overrides, settings: s,
+      });
+      const segs = r.segments, dropped = r.dropped;
+      state.avWanted = r.avWanted;
       // keep session-only enabled flags (ids are stable across re-fusion)
       const prev = new Map(state.segments.filter((x) => !x.ignored).map((x) => [x.id, x.enabled]));
       for (const seg of segs) if (!seg.ignored && prev.has(seg.id)) seg.enabled = prev.get(seg.id);

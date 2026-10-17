@@ -29,10 +29,13 @@
   const SEG_AD = [[60, 1.4], [40, 2.2]];
   const SEG_NOT_AD = 0.6, SEG_NOT_AD_MIN_DUR = 30;
   const END_SNAP_R = 8, END_MIN_SIDE = 1.5;
+  const END_LATER_MAX = 1;       // an end may only move later by this much: on 84 crowd-labelled ads, later moves of
+                                 // the danmaku end cut content more often than they helped (earlier ones never cut)
   const START_BACK = 0.5, START_AHEAD = 3, START_MIN_SIDE = 2.0;   // a start never moves much earlier: that would cut content
   const FIND_MIN = 2.0, FIND_AFTER_NEEDED = 8;
   const AV_BOOST = 0.25, AV_CAP = 0.9;
   const OPEN_SPAN = 240;         // how far past an open-ended danmaku start the end is searched for
+  const END_ZONE_AV_MIN = 3;     // score an end-zone segment needs (a 2.55 'ad' was a joke video's real ending)
 
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const r2 = (x) => Math.round(x * 100) / 100;
@@ -149,7 +152,7 @@
     const R = radius > 0 ? radius : END_SNAP_R;
     let best = null;
     for (const x of T) {
-      if (Math.abs(x.t - prior) > R) continue;
+      if (x.t < prior - R || x.t > prior + END_LATER_MAX) continue;
       const sd = side(B, x.t, true);
       if (sd == null || sd < END_MIN_SIDE) continue;
       const sc = sd + 0.15 * Math.min(4, x.depth / 5) + 0.1 * Math.min(3, x.cut / 40) - 0.6 * Math.abs(x.t - prior) / R;
@@ -232,15 +235,16 @@
   }
 
   const isOpen = (c) => c.end == null || !isFinite(c.end);
+  /** Danmaku that say it is an ad (sponsor vocabulary) or welcome viewers back after it (landing thanks). */
+  const adSpecific = (ev) => (ev.adVocab || 0) >= 0.4 || (ev.strongEnd || 0) >= 1;
   const key = (c) => `${c.source}:${Math.round(c.start)}-${isOpen(c) ? 'open' : Math.round(c.end)}`;
   const wants = (c) => !!c && isFinite(c.start) && (c.source === 'danmaku' || c.source === 'heat') &&
     (isOpen(c) ? c.source === 'danmaku' : c.end - c.start >= 10);
 
   /**
    * Apply A/V results (Map key → assess() result) to candidates. Returns new objects; inputs are not mutated.
-   * - 'notAd': never auto-skipped (confidence capped below minConfidence), boundaries untouched.
-   * - otherwise refined edges replace the estimates (lockStart/lockEnd stop fusion from re-snapping them; idStart/idEnd
-   *   keep segment ids stable), and 'ad' adds AV_BOOST confidence when there is independent danmaku/heat evidence.
+   * - the verdict is recorded in evidence; only 'ad' acts: +AV_BOOST confidence for candidates with ad-specific danmaku.
+   * - edges of closed candidates are left as the detectors gave them.
    * - an open-ended danmaku start whose span the media confirms gets the end found in the media; any other open-ended
    *   candidate is returned unchanged (the caller drops it).
    */
@@ -256,37 +260,31 @@
       const out = Object.assign({}, c, { evidence: Object.assign({}, ev, { av: { verdict: r.verdict, score: r.score, z: r.z, start: r.start, end: r.end } }) });
       if (isOpen(c)) {
         if (r.verdict !== 'ad' || !isFinite(r.end) || r.end - c.start < 20) return c;
-        // the start cluster must itself point at an ad: sponsor vocabulary or a jump cue
-        const startEvidence = (ev.adVocab || 0) >= 1 || (ev.targetsAgree || 0) >= 1 || (ev.nTargets || 0) >= 1 || (Array.isArray(ev.targets) && ev.targets.length > 0);
         out.idStart = c.start; out.idEnd = r.end;
         out.end = r.end; out.lockEnd = true;
         if (r.startBy) { out.start = r.start; out.lockStart = true; }
-        if (startEvidence) out.confidence = r2(Math.max(c.confidence, Math.min(AV_CAP, c.confidence + AV_BOOST)));
+        if (adSpecific(ev)) out.confidence = r2(Math.max(c.confidence, Math.min(AV_CAP, c.confidence + AV_BOOST)));
         out.sources = Array.from(new Set([].concat(c.sources || [c.source], ['media'])));
         out.reason = (c.reason || '') + ' · 音视频找到结尾';
         return out;
       }
-      if (r.verdict === 'notAd') {
-        out.confidence = Math.min(c.confidence, Math.max(0, r2(minConf - 0.05)));
-        out.reason = (c.reason || '') + ' · 音视频不像广告';
-        return out;
-      }
-      if (r.startBy || r.endBy) { out.idStart = c.start; out.idEnd = c.end; }
-      if (r.startBy) { out.start = r.start; out.lockStart = true; }
-      if (r.endBy) { out.end = r.end; out.lockEnd = true; }
-      if (r.verdict === 'ad') {
-        const independent = c.source === 'heat' || (ev.targetsAgree || 0) >= 1 || (ev.strongEnd || 0) >= 1 || (ev.adVocab || 0) >= 1 || !!ev.heat;
-        if (independent && !c.offerOnly) out.confidence = r2(Math.max(c.confidence, Math.min(AV_CAP, c.confidence + AV_BOOST)));
+      // Measured on 305 crowd-labelled ads (BilibiliSponsorBlock) and the candidates of 84 videos without sponsor labels:
+      // - 'notAd' is not a veto: a third of the real ads the media judged were no louder, steadier or brighter;
+      // - the edges the danmaku give are kept: snapping them to a transition made as many ends worse as better;
+      // - a confirmation lifts only candidates whose danmaku name an ad (vocabulary or landing thanks): intros and
+      //   OP songs are loud, steady and bright too, and their crowd jumps look exactly like pure 空降 coordinates.
+      if (r.verdict === 'ad' && !c.offerOnly && adSpecific(ev)) {
+        out.confidence = r2(Math.max(c.confidence, Math.min(AV_CAP, c.confidence + AV_BOOST)));
         out.sources = Array.from(new Set([].concat(c.sources || [c.source], ['media'])));
         out.reason = (c.reason || '') + ' · 音视频确认';
-      } else if (r.endBy) out.reason = (c.reason || '') + ' · 音视频校准';
+      }
       return out;
     });
   }
 
   /**
    * Final gate, applied after every boost (heat included): a danmaku segment ending in the last 3 % of the video
-   * (detector R14, evidence.endZone) is only auto-skipped with an A/V 'ad' verdict.
+   * (detector R14, evidence.endZone) is only auto-skipped with a strong A/V 'ad' verdict and ad-specific danmaku.
    */
   function gate(candidates, settings) {
     const list = Array.isArray(candidates) ? candidates : [];
@@ -294,7 +292,8 @@
     const cap = Math.max(0, r2(minConf - 0.05));
     return list.map((c) => {
       const ev = c && c.evidence;
-      if (!c || c.source !== 'danmaku' || !ev || !ev.endZone || (ev.av && ev.av.verdict === 'ad') || !(c.confidence > cap)) return c;
+      if (!c || c.source !== 'danmaku' || !ev || !ev.endZone || !(c.confidence > cap)) return c;
+      if (ev.av && ev.av.verdict === 'ad' && ev.av.score >= END_ZONE_AV_MIN && adSpecific(ev)) return c;
       return Object.assign({}, c, { confidence: cap });
     });
   }

@@ -15,6 +15,7 @@ const PURE_MODULES = [
   '36-media-probe.js',
   '37-av-segment.js',
   '33-fusion.js',
+  '38-pipeline.js',
   '40-skipper.js',
 ];
 

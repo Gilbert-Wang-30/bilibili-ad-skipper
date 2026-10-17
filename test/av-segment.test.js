@@ -30,10 +30,12 @@ function synth({ t0 = 0, t1 = 300, adStart = 100, adEnd = 200, adLike = true, se
 
 Deno.test('synthetic: a loud, steady, bright segment with dip+cut edges is confirmed and its end snaps', () => {
   const d = synth();
-  const r = AV.assess(d, 103, 194);
+  const r = AV.assess(d, 103, 205);
   assert(r.verdict === 'ad', 'verdict ad: ' + JSON.stringify(r));
-  assert(Math.abs(r.end - 200) <= 0.5, 'end snapped to 200, got ' + r.end);
+  assert(Math.abs(r.end - 200) <= 0.5, 'a late end estimate snaps back to 200, got ' + r.end);
   assert(r.endBy === 'av', 'end refined by A/V');
+  const early = AV.assess(d, 103, 194);
+  assert(early.end === 194 && early.endBy === null, 'an early end estimate is never pushed later: ' + JSON.stringify(early));
   const n = AV.assess(synth({ adLike: false }), 100, 200);
   assert(n.verdict === 'notAd', 'plain content is not an ad: ' + JSON.stringify(n));
   assert(n.endBy === null, 'nothing to snap to in plain content');
@@ -52,14 +54,14 @@ Deno.test('synthetic: skip-here end finding, pending when the data stops before 
 
 Deno.test('synthetic: audio-only data still judges segments (no luma term)', () => {
   const d = synth();
-  const r = AV.assess({ audio: d.audio, video: [] }, 103, 194);
+  const r = AV.assess({ audio: d.audio, video: [] }, 103, 205);
   assert(r.verdict === 'ad', 'audio-only verdict ad: ' + JSON.stringify(r));
   assert(Math.abs(r.end - 199.75) <= 0.6, 'end snapped to the audio dip, got ' + r.end);
 });
 
-Deno.test('apply: notAd caps confidence; ad boosts candidates with evidence and locks refined edges', () => {
+Deno.test('apply: only an ad verdict acts, only on ad-specific danmaku, and edges stay as the danmaku gave them', () => {
   const S = Object.assign({}, BAS.DEFAULT_SETTINGS);
-  const c1 = { source: 'danmaku', start: 100, end: 195, confidence: 0.55, reason: 'x', evidence: { targetsAgree: 1 } };
+  const c1 = { source: 'danmaku', start: 100, end: 195, confidence: 0.55, reason: 'x', evidence: { targetsAgree: 1, adVocab: 1 } };
   const c2 = { source: 'danmaku', start: 400, end: 500, confidence: 0.8, reason: 'y', evidence: { targetsAgree: 4 } };
   const c3 = { source: 'chapter', start: 600, end: 700, confidence: 0.95, reason: 'z' };
   const m = new Map([
@@ -67,12 +69,17 @@ Deno.test('apply: notAd caps confidence; ad boosts candidates with evidence and 
     [AV.key(c2), { verdict: 'notAd', score: 0.1, start: 400, end: 500, startBy: null, endBy: null }],
   ]);
   const [a, b, c] = AV.apply([c1, c2, c3], m, S);
-  assert(a.confidence >= 0.6 && a.end === 200 && a.lockEnd && a.idEnd === 195 && a.sources.includes('media'), 'confirmed: ' + JSON.stringify(a));
-  assert(b.confidence < S.minConfidence && b.end === 500, 'refuted below threshold: ' + JSON.stringify(b));
+  assert(a.confidence >= 0.6 && a.end === 195 && !a.lockEnd && a.sources.includes('media'), 'confirmed, edges kept: ' + JSON.stringify(a));
+  assert(b.confidence === 0.8 && b.end === 500 && b.evidence.av.verdict === 'notAd', 'notAd leaves the candidate alone: ' + JSON.stringify(b));
   assert(c === c3, 'chapters untouched');
   assert(c1.end === 195 && c1.confidence === 0.55, 'input not mutated');
   const noEv = AV.apply([{ source: 'danmaku', start: 100, end: 195, confidence: 0.45, evidence: {} }], new Map([['danmaku:100-195', { verdict: 'ad', score: 2, start: 100, end: 195 }]]), S)[0];
   assert(noEv.confidence === 0.45, 'no independent evidence → no boost');
+  // pure 空降 coordinates (how intro skips and 'good part' jumps look) are not lifted, however ad-like the media
+  const jumps = AV.apply([{ source: 'danmaku', start: 100, end: 195, confidence: 0.55, evidence: { targetsAgree: 5 } }], new Map([['danmaku:100-195', { verdict: 'ad', score: 3, start: 100, end: 195 }]]), S)[0];
+  assert(jumps.confidence === 0.55, 'pure jump targets → no boost: ' + jumps.confidence);
+  const landing = AV.apply([{ source: 'danmaku', start: 100, end: 195, confidence: 0.55, evidence: { targetsAgree: 1, strongEnd: 2 } }], new Map([['danmaku:100-195', { verdict: 'ad', score: 2, start: 100, end: 195 }]]), S)[0];
+  assert(landing.confidence >= 0.6, 'landing thanks count as ad-specific: ' + landing.confidence);
   assert(AV.apply([c1], m, Object.assign({}, S, { useAvProbe: false }))[0] === c1, 'setting off → untouched');
 });
 
@@ -135,7 +142,9 @@ Deno.test({ name: 'measured: every ad is confirmed with boundaries ±5 s off, an
     for (const [ds, de] of [[0, 0], [-4, 5], [4, -5], [2, 6], [-2, -6]]) {
       const r = AV.assess(d, start + ds, end + de);
       assert(r.verdict === 'ad', `${bv} ${ds}/${de}: ` + JSON.stringify(r));
-      assert(Math.abs(r.end - end) <= 2.5, `${bv} ${ds}/${de} end ${r.end} vs ${end}`);
+      // a late estimate snaps back to the real end; an early one is never pushed later (that risks cutting content)
+      if (de >= 0) assert(Math.abs(r.end - end) <= 2.5, `${bv} ${ds}/${de} end ${r.end} vs ${end}`);
+      else assert(r.end <= end + de + 1, `${bv} ${ds}/${de} end ${r.end} moved later than the estimate ${end + de}`);
       // a start only moves a little (segues hide the cut): never more than 0.5 s earlier than the estimate
       assert(r.start >= start + ds - 0.5 && r.start <= start + ds + 3, `${bv} ${ds}/${de} start ${r.start} vs estimate ${start + ds}`);
       if (ds >= -2) assert(r.start >= start - 2.5, `${bv} ${ds}/${de} start ${r.start} cuts content (${start})`);
@@ -208,9 +217,11 @@ Deno.test('end zone: "skip to the end" targets are dropped, an ad before a short
   const c = r.candidates.find((x) => x.end != null && Math.abs(x.end - 285) <= 3);
   assert(c, 'the ad keeps its end at 4:45: ' + JSON.stringify(r.candidates.map((x) => [x.start, x.end, x.confidence])));
   assert(c.confidence < S.minConfidence && c.evidence.endZone, 'capped below auto-skip until the A/V check: ' + c.confidence);
-  const lifted = AV.apply([c], new Map([[AV.key(c), { verdict: 'ad', score: 2.5, start: c.start, end: c.end, startBy: null, endBy: null }]]), S)[0];
+  const lifted = AV.apply([c], new Map([[AV.key(c), { verdict: 'ad', score: 3.2, start: c.start, end: c.end, startBy: null, endBy: null }]]), S)[0];
   assert(lifted.confidence >= S.minConfidence, 'A/V confirmation lifts it: ' + lifted.confidence);
-  assert(AV.gate([lifted], S)[0].confidence >= S.minConfidence, 'the gate lets an A/V-confirmed end-zone segment through');
+  assert(AV.gate([lifted], S)[0].confidence >= S.minConfidence, 'the gate lets a strongly confirmed end-zone segment through');
+  const weakly = AV.apply([c], new Map([[AV.key(c), { verdict: 'ad', score: 2.5, start: c.start, end: c.end }]]), S)[0];
+  assert(AV.gate([weakly], S)[0].confidence < S.minConfidence, 'a weaker ad verdict is not enough in the end zone');
   // any other boost (heat corroboration, a lower threshold) is undone by the final gate
   const heated = Object.assign({}, c, { confidence: 0.75 });
   assert(AV.gate([heated], S)[0].confidence < S.minConfidence, 'heat alone cannot make an end-zone segment auto-skip');
