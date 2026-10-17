@@ -2,7 +2,7 @@
 
 const DEFAULT_SETTINGS = {
   enabled: true, mode: 'auto', minConfidence: 0.6,
-  useChapters: true, useDanmaku: true, useMedia: true, useAudio: false, useHeat: true, useAvProbe: true, skipHereButton: true,
+  useChapters: true, useDanmaku: true, useMedia: true, useAudio: false, useHeat: true, useCrowd: true, useAvProbe: true, skipHereMedia: true, skipHereButton: true,
   showMarkers: true, showToast: true, toastDurationMs: 6000, landingOffsetSec: 0,
   extraStartKeywords: [], extraEndKeywords: [], ignoreUps: [], debug: false,
 };
@@ -11,12 +11,18 @@ chrome.runtime.onInstalled.addListener(async () => {
   try {
     const { settings } = await chrome.storage.sync.get('settings');
     if (!settings) await chrome.storage.sync.set({ settings: DEFAULT_SETTINGS });
-    else await chrome.storage.sync.set({ settings: Object.assign({}, DEFAULT_SETTINGS, settings) });
+    else {
+      const next = Object.assign({}, DEFAULT_SETTINGS, settings);
+      if (settings.skipHereMedia === undefined && settings.useAvProbe === false) next.skipHereMedia = false;   // keep an A/V opt-out
+      await chrome.storage.sync.set({ settings: next });
+    }
   } catch (e) { console.warn('[BAS bg] init settings failed', e); }
   try { await chrome.action.setBadgeBackgroundColor({ color: '#fb7299' }); } catch (e) { /* ignore */ }
 });
 
-const ALLOWED = /^https:\/\/(?:api\.bilibili\.com\/|bvc\.bilivideo\.com\/pbp\/data\?)/;
+const ALLOWED = /^https:\/\/(?:api\.bilibili\.com\/|bvc\.bilivideo\.com\/pbp\/data\?|bsbsb\.top\/api\/skipSegments\/[0-9a-f]{4}\?)/;
+// third-party lookups never carry cookies
+const THIRD_PARTY = /^https:\/\/bsbsb\.top\//;
 
 function bufToB64(buf) {
   const bytes = new Uint8Array(buf);
@@ -33,7 +39,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       try {
         if (!ALLOWED.test(msg.url)) { sendResponse({ ok: false, error: 'url not allowed' }); return; }
-        const resp = await fetch(msg.url, { credentials: 'include', cache: 'no-store' });
+        const third = THIRD_PARTY.test(msg.url);
+        const init = third
+          ? { credentials: 'omit', cache: 'no-store', headers: { 'x-ext-version': 'bilibili-ad-skipper/' + chrome.runtime.getManifest().version } }
+          : { credentials: 'include', cache: 'no-store' };
+        const resp = await fetch(msg.url, init);
         if (msg.responseType === 'arraybuffer') {
           const buf = await resp.arrayBuffer();
           sendResponse({ ok: resp.ok, status: resp.status, b64: bufToB64(buf) });

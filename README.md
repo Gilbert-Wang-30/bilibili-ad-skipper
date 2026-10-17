@@ -1,20 +1,22 @@
 # Bilibili Ad Skipper（恰饭跳过）
 
 A Chrome (Manifest V3) extension that detects and skips in-video sponsored segments (恰饭 / 植入广告) on
-`www.bilibili.com/video/*`. Everything runs locally in your browser: no server of its own, no accounts, no telemetry.
+`www.bilibili.com/video/*`. Detection runs locally in your browser. There is no server of its own, no accounts and no
+analytics. The one third-party request, the optional crowd-mark lookup, is described under Privacy.
 
 > Unofficial project, not affiliated with bilibili. Released under the MIT license.
 
 ## How it detects an ad
 
-Five independent signals are fused into time segments with a confidence score:
+Six independent signals are fused into time segments with a confidence score:
 
 | Signal | What it uses | Confidence |
 |---|---|---|
 | **Chapters (章节 / 视频看点)** | Uploader chapters from the player API whose title says 广告 / 恰饭 / 赞助 / 推广 / 商单 … | 0.95 |
+| **Crowd marks (小电视空降助手)** | Segments that viewers of [BilibiliSponsorBlock](https://github.com/hanydd/BilibiliSponsorBlock) marked by hand and voted on (downvoted ones are hidden). Where a video has one it is the most precise signal (edges within ~1 s); a disputed mark is only offered. | 0.9 – 0.98 |
 | **Danmaku (弹幕)** | All danmaku of the video (same protobuf API the player uses). Clusters of *ad announcements* (恰饭了, 广告来了, 零帧起手, 感谢金主…), *jump cues* (空降 6:00, 跳伞04:50, 745工程, 坐标609, 向右20下 …) and *landing thanks* (欢迎回来, 空降成功, 感谢609工程 …). The median of agreeing jump targets gives the end; thanks clusters confirm it. | 0.2 – 1.0 |
 | **Viewer heat (高能进度条)** | The player's own viewer-activity curve (about 100 samples per video, served without login). When many viewers drag past an ad, the curve ramps up across it, peaks at its end and falls off a cliff. A danmaku segment that matches gets +0.2 confidence, which lets thin danmaku (e.g. signed out) still auto-skip. On popular videos it also blocks auto-skips that have no 空降 coordinates when the curve shows no skipping. Alone, it only offers a manual skip button. | confirmation |
-| **Audio / video look-ahead** | For every suspected segment, *before you reach it*, the extension downloads just that stretch (plus 45 s around it) of the video's own lowest-bitrate audio track and its 360p picture, using the byte index every bilibili stream carries (about 4–12 MB per segment, at most 60 MB per video), decodes it in the page (`decodeAudioData`, WebCodecs) and compares the inside with the surroundings. Many sponsored reads are **louder**, **steadier** (narration over music, no pauses) and **brighter** than the video around them. When a segment clearly is, and its danmaku name an ad (恰饭 / 广告 … or landing thanks), it gets +0.25 confidence. That lifts thin-danmaku ads to auto-skip. It also finds the end for danmaku that only announce an ad's start. It never blocks a segment: on crowd-labelled ads a third of the real ones looked no different from their surroundings. | confirmation, open-ended ends |
+| **Audio / video look-ahead** | For a likely ad the danmaku cannot confirm on their own (they name an ad but are too few), *before you reach it*, the extension downloads just that stretch (plus 45 s around it) of the video's own lowest-bitrate audio track and its 360p picture, using the byte index every bilibili stream carries (about 4–12 MB per segment, at most 60 MB per video), decodes it in the page (`decodeAudioData`, WebCodecs) and compares the inside with the surroundings. Many sponsored reads are **louder**, **steadier** (narration over music, no pauses) and **brighter** than the video around them. When a segment clearly is, and its danmaku name an ad (恰饭 / 广告 … or landing thanks), it gets +0.25 confidence. That lifts thin-danmaku ads to auto-skip. It also finds the end for danmaku that only announce an ad's start. It never blocks a segment: on crowd-labelled ads a third of the real ones looked no different from their surroundings. | confirmation, open-ended ends |
 | **Live frame cuts** | While the video plays, low-resolution frame differences (and optionally the audio level/spectrum via `captureStream`, never re-routing playback) record hard cuts. Cuts within a few seconds of a boundary that the look-ahead did not already fix snap it to the exact frame. | refinement only |
 
 Rules that keep false positives down (all learned from 50 real videos, see `test/fixtures/expected.json`):
@@ -31,15 +33,23 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
 
 ## Privacy
 
-* The extension only talks to bilibili's own servers (`api.bilibili.com`, `bvc.bilivideo.com` and the video CDN the
-  player itself streams from), making the same kind of requests the bilibili player makes. Nothing is sent anywhere
-  else, and there is no analytics.
-* The audio/video look-ahead fetches byte ranges of the video's own streams and analyses them in memory. No audio or
-  picture is stored; only the verdict (a score and the refined boundaries) goes into the result cache. Turn it off with
-  **音视频预读核验** in the options.
+* Detection talks to bilibili's own servers (`api.bilibili.com`, `bvc.bilivideo.com` and the video CDN the player itself
+  streams from), making the same kind of requests the bilibili player makes. There is no analytics.
+* **Crowd marks (one third-party request, on by default; turn off with 众包片段库 in the options).** For each video whose
+  results are not cached, the background worker asks `bsbsb.top` (BilibiliSponsorBlock, served through Cloudflare):
+  - **Sent:** only the first 4 hex digits of `sha256(BV id)`. The server answers with every marked video in that
+    bucket, usually several, and the match is made locally, so the server learns only that you watch one of them.
+  - **Not sent:** no cookies, no account data, no Referer.
+  - **Visible to them anyway:** like any request, it shows your IP address, the browser's User-Agent / Accept-Language,
+    and an `x-ext-version: bilibili-ad-skipper/<version>` header, which their API asks clients to send.
+  - The answer is cached with the other results for 12 hours.
+* The audio/video look-ahead fetches byte ranges of the video's own streams and analyses them in memory. It only runs
+  for likely ads the danmaku cannot confirm on their own: most videos need none, about 1 MB per video on average. No
+  audio or picture is stored; only the verdict goes into the result cache. Turn it off with **音视频预读核验**. The skip
+  button's media check (about 5 MB per press) is a separate setting.
 * Settings sync through `chrome.storage.sync`. Per-video ignores and a 12-hour result cache stay in `chrome.storage.local`.
-* Host permissions are limited to `www.bilibili.com`, `api.bilibili.com` and `bvc.bilivideo.com` (the CDN answers the
-  page's own range requests, so it needs no extra permission).
+* Host permissions are limited to `www.bilibili.com`, `api.bilibili.com`, `bvc.bilivideo.com` and `bsbsb.top` (the
+  crowd lookup). The video CDN answers the page's own range requests, so it needs no extra permission.
 
 ## Install (unpacked)
 
@@ -87,6 +97,8 @@ src/content/34-detect-heat.js 高能进度条 heat curve: ad-shaped runs, confir
 src/content/35-skip-here.js   "skip the ad playing now": end estimate for ads the detectors missed
 src/content/36-media-probe.js look-ahead: DASH byte index (sidx), ranged fetch, fMP4 demux, audio/video decode, features
 src/content/37-av-segment.js  look-ahead judgement: is it an ad, where does it end (pure, tested)
+src/content/38-pipeline.js    candidates → segments (heat, A/V, end-zone gate, fusion); shared with tools/eval-bsb.js
+src/content/39-detect-crowd.js crowd marks (BilibiliSponsorBlock) → candidates
 src/content/33-fusion.js      merge, snap, overrides → segments
 src/content/40-skipper.js     timeupdate watcher, skip/undo/manual
 src/content/41-ui.js + content.css   markers, toast, skip button
@@ -155,6 +167,25 @@ and three opening skips):
 | Skip-button presses at every second inside an ad: landing vs the real end | −2.1 … +0.2 s (687 presses) |
 | Live check on bilibili (v0.4.1, 2026-10-17) | measured ads auto-skipped (ends from the danmaku, e.g. 1.2 s late on BV1jCJs6UE9S); the thin-danmaku ad gets its end from the media; an intro the media calls ad-like stays a button |
 | Cost per suspected segment | 4–12 MB (audio ≈ 66 kbps + 360p video 125–400 kbps depending on the codec), 4–10 s in the background; at most 60 MB per video |
+
+### Crowd marks + detectors on today's popular videos (2026-10-17)
+
+583 videos from bilibili's 热门 and 每周必看 lists (median 1.5 days old; danmaku fetched signed out, median 292 per
+video). Crowd marks were taken from that day's BilibiliSponsorBlock dump, as the extension would receive them.
+
+| | detectors (danmaku, heat, chapters) | crowd marks | both (the extension) |
+|---|---|---|---|
+| Videos with an auto-skip | 14 | 48 | **52** |
+| Ad segments auto-skipped | 14 | 57 | **61** |
+| Estimated share of all ads in these videos | ~18 % | ~70 % | **~75 %** |
+
+* **Overlap:** both sources found the same ad 10 times. Their starts differ by a median 2.9 s, their ends by 0.4 s.
+* **Precision, checked by eye** (a frame from inside each segment): all 4 detector-only skips and all 8 sampled
+  crowd-only skips were real ads.
+* **How the share was estimated:** capture–recapture over the overlap puts the ads in these videos at about 80. That is
+  rough, since the two sources are not independent.
+* **Hand-measured set:** crowd marks found 7 / 7 frame-measured ads (start −3.4 … +1.6 s, end −0.6 … +1.8 s) and nothing on
+  the 19 verified ad-free videos.
 
 ### Crowd-labelled test (BilibiliSponsorBlock, 2026-10-17)
 

@@ -16,7 +16,7 @@
     shadow: '.bpx-player-shadow-progress-area',
     exclude: '.v-recommend-inline-player', // inline preview players also instantiate bpx
   };
-  const COLORS = Object.freeze({ chapter: '#ff7a45', danmaku: '#fb7299', user: '#52c41a', media: '#40a9ff', heat: '#faad14' });
+  const COLORS = Object.freeze({ chapter: '#ff7a45', crowd: '#9254de', danmaku: '#fb7299', user: '#52c41a', media: '#40a9ff', heat: '#faad14' });
   const MAX_TOASTS = 2;
   const FADE_MS = 260;
   const DEFAULT_TOAST_MS = 6000;

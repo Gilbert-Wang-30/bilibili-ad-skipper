@@ -10,7 +10,7 @@
   const MIN_SEGMENT_SEC = 5;
   const CHAPTER_MERGE_FRACTION = 0.4;   // danmaku overlapping a chapter ad by > 40 % of itself merges into it
   const IGNORE_FRACTION = 0.5;          // override.ignore removes a segment overlapping it by > 50 %
-  const SOURCE_PRIORITY = { user: 0, chapter: 1, danmaku: 2, media: 3, heat: 4 };
+  const SOURCE_PRIORITY = { user: 0, chapter: 1, crowd: 1.5, danmaku: 2, media: 3, heat: 4 };
 
   const num = (v) => (typeof v === 'number' && isFinite(v) ? v : NaN);
   const round2 = (v) => Math.round(v * 100) / 100;
@@ -45,6 +45,7 @@
     if (source === 'danmaku') return s.useDanmaku !== false;
     if (source === 'media') return s.useMedia !== false || s.useAudio === true;
     if (source === 'heat') return s.useHeat !== false;
+    if (source === 'crowd') return s.useCrowd !== false;
     return true; // 'user' and unknown sources are always kept
   }
 
@@ -164,25 +165,34 @@
       cands.push(c);
     }
 
-    // 2. chapter authority: danmaku candidates overlapping a chapter candidate merge into it
-    const chapters = cands.filter((c) => c.source === 'chapter');
+    // 2. authority of uploader chapters and crowd marks: danmaku candidates overlapping one merge into it. A crowd mark
+    // also absorbs any weak or offer-only estimate that merely touches it, so the union in step 5 cannot stretch a
+    // precise mark over minutes of content the estimate alone would never have skipped.
+    const minConfFuse = isFinite(settings.minConfidence) ? settings.minConfidence : BAS.DEFAULT_SETTINGS.minConfidence;
+    const chapters = cands.filter((c) => c.source === 'chapter' || c.source === 'crowd');
     if (chapters.length) {
       const rest = [];
       for (const c of cands) {
         if (c.source !== 'danmaku') { rest.push(c); continue; }
-        let host = null;
+        let host = null, strong = false;
         for (const ch of chapters) {
           if (c.end === null) {
             if (c.start >= ch.start - BOUNDARY_SNAP_SEC && c.start < ch.end) { host = ch; break; }
           } else {
-            const len = c.end - c.start;
-            if (len > 0 && overlap(c.start, c.end, ch.start, ch.end) / len > CHAPTER_MERGE_FRACTION) { host = ch; break; }
+            const len = c.end - c.start, o = len > 0 ? overlap(c.start, c.end, ch.start, ch.end) : 0;
+            if (len > 0 && o / len > CHAPTER_MERGE_FRACTION) { host = ch; strong = true; break; }
+            if (ch.source === 'crowd' && o > 0 && (c.offerOnly || c.confidence < minConfFuse)) { host = ch; break; }
           }
         }
         if (!host) { rest.push(c); continue; }
         addSources(host, c.sources);
-        host.confidence = Math.max(host.confidence, c.offerOnly ? 0 : c.confidence);
+        if (strong) host.confidence = Math.max(host.confidence, c.offerOnly ? 0 : c.confidence);
         if (!/弹幕佐证/.test(host.reason)) host.reason = host.reason + ' · 弹幕佐证';
+        // agreement of the viewers' danmaku with a crowd mark: once, not per merged estimate
+        if (host.source === 'crowd' && strong && !c.offerOnly && !host._corroborated) {
+          host._corroborated = true;
+          host.confidence = Math.max(host.confidence, Math.min(0.99, host.confidence + 0.05));
+        }
         host.evidence.danmaku = (host.evidence.danmaku || []).concat([{ start: c.start, end: c.end, confidence: c.confidence, reason: c.reason }]);
       }
       cands = rest;
@@ -259,7 +269,7 @@
       const seg = Object.assign({}, c);
       const a = isFinite(seg._id0) ? seg._id0 : isFinite(seg.idStart) ? seg.idStart : seg.start;
       const b = isFinite(seg._id1) && seg._id1 !== null ? seg._id1 : isFinite(seg.idEnd) ? seg.idEnd : seg.end;
-      delete seg._id0; delete seg._id1; delete seg.idStart; delete seg.idEnd; delete seg.lockStart; delete seg.lockEnd;
+      delete seg._id0; delete seg._id1; delete seg.idStart; delete seg.idEnd; delete seg.lockStart; delete seg.lockEnd; delete seg._corroborated;
       seg.id = String(seg.source)[0] + ':' + Math.round(a) + '-' + Math.round(b);
       seg.autoSkip = seg.confidence >= minConf && !seg.offerOnly;
       seg.enabled = c.enabled !== false;

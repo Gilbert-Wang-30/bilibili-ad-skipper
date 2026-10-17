@@ -62,7 +62,7 @@ function avResults(bv, wanted, heatStep) {
 const MODES = [
   { name: 'danmaku', settings: { useHeat: false, useAvProbe: false } },
   { name: '+heat', settings: { useAvProbe: false } },
-  { name: '+heat+A/V', settings: {}, av: true },
+  { name: '+heat+A/V', settings: { useAvProbe: true }, av: true },
 ];
 const stats = {};
 for (const m of MODES) stats[m.name] = { miss: {}, truth: 0, autoHit: 0, anyHit: 0, startErr: [], endErr: [], cut: [], autoSegs: 0, unexplained: 0, ctlVideos: 0, ctlAuto: 0, ctlAutoVideos: 0, videos: 0 };

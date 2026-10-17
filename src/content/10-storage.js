@@ -131,6 +131,8 @@
   /** Coerce a stored object into a valid settings object (unknown keys are preserved). */
   function sanitizeSettings(raw) {
     const s = Object.assign({}, DEFAULTS, raw && typeof raw === 'object' ? raw : {});
+    // skipHereMedia (0.4.2) is new: someone who had turned the A/V look-ahead off keeps the skip button media-free too
+    if (raw && typeof raw === 'object' && raw.skipHereMedia === undefined && raw.useAvProbe === false) s.skipHereMedia = false;
     for (const k of Object.keys(DEFAULTS)) {
       const def = DEFAULTS[k], v = s[k];
       if (typeof def === 'boolean') s[k] = typeof v === 'boolean' ? v : def;

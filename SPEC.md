@@ -410,6 +410,38 @@ joke video's real ending).
 Skipper suppressions after a refinement: a segment the viewer chose to watch (user seek / undo) is judged by its
 current range; an auto-skip keeps the range it skipped, so an end that moved later is skipped as well.
 
+### 7.8 Crowd marks — `BAS.detectCrowd` (39-detect-crowd.js), `BAS.api.getCrowdSegments` (22-api.js)
+
+Source: BilibiliSponsorBlock (小电视空降助手). `GET https://bsbsb.top/api/skipSegments/<sha256(bvid)[0:4]>?categories=["sponsor"]`
+returns `[{videoID, segments:[{segment:[s,e], cid, UUID, category, actionType, locked, votes, videoDuration}]}]` for every
+marked video in the hash bucket (404 = none). Downvoted marks are hidden by the server; one segment per overlapping
+cluster is returned.
+
+Request path: the server sends no CORS headers, so the request always goes through the background worker. That worker's
+allow-list admits only that path with a 4-hex prefix, sends no cookies and adds `x-ext-version`. Limits: 5 s timeout,
+abort honoured, at most 50 segments read.
+
+Mapping (pure):
+* sponsor / skip only; votes ≤ −2 dropped; locked 0.98, votes ≥ 2 0.95, votes ≥ 0 0.9, votes −1 0.5 + `offerOnly`.
+* A mark under another cid counts only on a single-part video of the same length (the file was replaced). A mark without
+  a cid counts on a single-part video or by its length. A mark made on a cut of a different length (±3 s) is ignored.
+
+Measured:
+* The 7 frame-measured ads: all found live, start −3.4 … +1.6 s, end −0.6 … +1.8 s.
+* The 19 verified ad-free videos: 0 marks.
+* Unvoted submissions on videos with a confirmed ad overlap it 90 % of the time; downvoted ones 29 %.
+* Coverage is the limit: about 1 in 10 current popular videos has a mark.
+
+Fusion (§7.4 step 2): crowd marks are authoritative like chapters.
+* A danmaku estimate overlapping > 40 % of itself merges in (+0.05 once).
+* A weak or offer-only estimate that merely touches a mark is absorbed rather than unioned, so a mark is never stretched
+  over content.
+
+Elsewhere:
+* The A/V look-ahead skips estimates a mark already decides.
+* With `useCrowd` off, crowd candidates are ignored everywhere, the skip button included.
+* A failed lookup keeps marks already known from the cache, and is never cached as "no marks".
+
 ## 8. Skipper — `new BAS.Skipper(video, opts)`
 
 `opts = { getSegments: () => Segment[], getSettings: () => settings, onSkip(seg, from), onEnter(seg), onLeave(seg) }`

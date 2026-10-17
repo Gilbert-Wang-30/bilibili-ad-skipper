@@ -237,6 +237,19 @@
   const isOpen = (c) => c.end == null || !isFinite(c.end);
   /** Danmaku that say it is an ad (sponsor vocabulary) or welcome viewers back after it (landing thanks). */
   const adSpecific = (ev) => (ev.adVocab || 0) >= 0.4 || (ev.strongEnd || 0) >= 1;
+  /**
+   * Whether an 'ad' verdict could change what happens to this candidate. Only these are worth downloading media for:
+   * a confirmation never moves edges or blocks anything, so an auto-skip that is already decided gains nothing.
+   */
+  function canChange(c, settings) {
+    if (!wants(c) || c.source !== 'danmaku' || c.offerOnly) return false;
+    const ev = c.evidence || {};
+    if (!adSpecific(ev)) return false;
+    if (isOpen(c)) return true;                                   // the media can supply the end
+    const minConf = settings && isFinite(settings.minConfidence) ? settings.minConfidence : 0.6;
+    if (ev.endZone) return true;                                  // only a strong verdict opens the end-zone gate
+    return c.confidence < minConf && c.confidence + AV_BOOST >= minConf;
+  }
   const key = (c) => `${c.source}:${Math.round(c.start)}-${isOpen(c) ? 'open' : Math.round(c.end)}`;
   const wants = (c) => !!c && isFinite(c.start) && (c.source === 'danmaku' || c.source === 'heat') &&
     (isOpen(c) ? c.source === 'danmaku' : c.end - c.start >= 10);
@@ -299,7 +312,7 @@
   }
 
   BAS.avSegment = {
-    blocks, transitions, segmentScore, verdictOf, adThreshold, assess, assessOpen, findEnd, apply, gate, key, wants, isOpen,
+    blocks, transitions, segmentScore, verdictOf, adThreshold, assess, assessOpen, findEnd, apply, gate, key, wants, isOpen, canChange,
     CONST: { CTX, SEG_AD, SEG_NOT_AD, SEG_NOT_AD_MIN_DUR, END_SNAP_R, FIND_MIN, AV_BOOST, AV_CAP, OPEN_SPAN },
   };
 })();

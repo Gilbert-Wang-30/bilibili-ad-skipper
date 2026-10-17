@@ -338,11 +338,46 @@
     }
   }
 
+  /**
+   * getCrowdSegments(bvid) → BilibiliSponsorBlock sponsor segments of this video ([] when none). Privacy: only the first
+   * 4 hex digits of sha256(bvid) are sent; the server answers with every marked video in that bucket and the match is
+   * made here. The server sends no CORS headers, so the request always goes through the background worker, without
+   * cookies (src/background.js).
+   */
+  const CROWD_API = 'https://bsbsb.top/api/skipSegments/';
+  const CROWD_TIMEOUT_MS = 5000;     // detection waits for the lookup; a slow third-party server must not hold it up
+  async function sha256Hex(text) {
+    const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text)));
+    return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  async function getCrowdSegments(bvid, opts) {
+    if (!bvid || !canProxy()) return [];
+    const prefix = (await sha256Hex(bvid)).slice(0, 4);
+    const url = CROWD_API + prefix + '?categories=' + encodeURIComponent('["sponsor"]');
+    let json, timer = null, onAbort = null;
+    const signal = opts && opts.signal;
+    const giveUp = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new ApiError('众包片段库请求超时', { url })), (opts && opts.timeoutMs) || CROWD_TIMEOUT_MS);
+      if (signal) { onAbort = () => reject(abortError()); if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+    });
+    try { json = await Promise.race([proxyFetch(url, 'json', signal), giveUp]); }
+    catch (e) {
+      if (isAbort(e)) throw e;
+      if (e && e.status === 404) return [];          // nothing marked in this bucket
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    }
+    const entry = Array.isArray(json) ? json.find((v) => v && v.videoID === bvid) : null;
+    return entry && Array.isArray(entry.segments) ? entry.segments.slice(0, 50) : [];
+  }
+
   BAS.api = {
     API, SEGMENT_SEC, DM_CONCURRENCY, ApiError,
     buildUrl, segmentUrl, b64ToBuffer, canProxy,
     fetchJSON, fetchBuffer,
-    getView, getPlayerInfo, getDanmaku, getHeat,
+    getView, getPlayerInfo, getDanmaku, getHeat, getCrowdSegments, sha256Hex,
     getWbiKeys: (opts) => BAS.wbi.getKeys(opts),
   };
 })();

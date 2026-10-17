@@ -221,12 +221,12 @@
       const dur = info.duration || (isFinite(v.duration) ? v.duration : 0);
       let r = BAS.findAdEnd({
         t, duration: dur, danmaku: list, heat: state.heatAnalysis,
-        boundaries: state.boundaries, candidates: [].concat(state.segments, state.dropped, state.candidates),
+        boundaries: state.boundaries, candidates: knownSpans(),
       });
       if (!r) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
       // Unless the press is inside a segment we already know, measure the end from the video's own audio/picture:
       // on the measured ads this lands within 2.5 s of the real end from anywhere inside the ad.
-      if (r.source !== 'candidate' && avAvailable()) {
+      if (r.source !== 'candidate' && skipHereMediaAvailable()) {
         const wait = BAS.ui ? BAS.ui.showToast({ text: '正在分析音视频，寻找广告结尾…', durationMs: AV_SKIP_HERE_MS + 2000, force: true }) : null;
         let f = null;
         try { f = await avFindEnd(info, t, dur); } catch (e) { BAS.debug('skip-here: A/V failed', e); }
@@ -243,7 +243,7 @@
       if (r.end <= now + 1) {
         // a real end estimate that is already behind us means the ad is over; only a blind step is recomputed
         if (r.source !== 'fallback') { if (BAS.ui) BAS.ui.showToast({ text: '广告已经结束', force: true }); return null; }
-        const again = BAS.findAdEnd({ t: now, duration: dur, danmaku: list, heat: state.heatAnalysis, boundaries: state.boundaries, candidates: [].concat(state.segments, state.dropped, state.candidates) });
+        const again = BAS.findAdEnd({ t: now, duration: dur, danmaku: list, heat: state.heatAnalysis, boundaries: state.boundaries, candidates: knownSpans() });
         if (!again) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
         r = Object.assign({}, again, { start: Math.min(again.start, r.start) });
       }
@@ -273,7 +273,13 @@
       try { v.removeEventListener('seeking', onSeeking); } catch (e) { /* ignore */ }
     }
   }
+  /** Everything known about this video for the skip button (crowd marks only while that source is enabled). */
+  const knownSpans = () => {
+    const crowdOn = settings().useCrowd !== false;
+    return [].concat(state.segments, state.dropped, state.candidates).filter((c) => crowdOn || (c.source !== 'crowd' && !(c.sources || []).every((x) => x === 'crowd')));
+  };
   const avAvailable = () => { const s = settings(); return s.enabled && s.useAvProbe !== false && !!BAS.mediaProbe && !!BAS.avSegment && typeof fetch === 'function'; };
+  const skipHereMediaAvailable = () => { const s = settings(); return s.enabled && s.skipHereMedia !== false && !!BAS.mediaProbe && !!BAS.avSegment && typeof fetch === 'function'; };
   function mergeProbe(a, b) {
     const lastA = a.audio.length ? a.audio[a.audio.length - 1].t : -Infinity, lastV = a.video.length ? a.video[a.video.length - 1].t : -Infinity;
     return { audio: a.audio.concat(b.audio.filter((x) => x.t > lastA)), video: a.video.concat(b.video.filter((x) => x.t > lastV)) };
@@ -543,10 +549,20 @@
       return parsed;
     })().catch((e) => { BAS.debug('heat failed', e); return null; });
 
-    const [ch, dm, heat] = await Promise.all([chaptersP, danmakuP, heatP]);
+    const crowdP = (async () => {
+      if (!BAS.detectCrowd || s.useCrowd === false || !info.bvid) return { candidates: [] };
+      const segs = await BAS.api.getCrowdSegments(info.bvid, { signal: ac.signal });
+      return BAS.detectCrowd(segs, { cid: info.cid, duration: info.duration, parts: info.parts });
+    })().catch((e) => { BAS.debug('crowd lookup failed', e && e.message); return { candidates: [], failed: true }; });
+    // marks known from the cache survive a failed lookup during the hourly refresh
+    const cachedCrowd = () => state.candidates.filter((c) => c.source === 'crowd');
+
+    const [ch, dm, heat, crowd] = await Promise.all([chaptersP, danmakuP, heatP, crowdP]);
     if (!alive()) { if (!settings().enabled && runId === state.runId) { state.status = 'disabled'; clearUi(); sendBadge(0); } return; }
 
-    state.candidates = [].concat(ch.candidates, dm.candidates);
+    const crowdCands = crowd.failed ? cachedCrowd() : crowd.candidates;
+    state.candidates = [].concat(ch.candidates, crowdCands, dm.candidates);
+    state.stats.crowd = crowdCands.length;
     state.boundaries = ch.boundaries; state.viewPoints = ch.viewPoints || [];
     if (heat) { state.heat = heat; state.heatAnalysis = BAS.detectHeat.analyse(heat, info.duration); }
     state.stats.heat = state.heatAnalysis ? { step: state.heatAnalysis.step, usable: state.heatAnalysis.usable, adRuns: state.heatAnalysis.runs.filter((r) => r.adLike).length } : null;
@@ -557,7 +573,8 @@
     else { state.status = 'ready'; state.error = null; }
     applyFusion('detect');
     // Only complete results are cached; failures and partial danmaku are retried on the next visit.
-    state.cacheable = !dm.error && !ch.error && !(dm.missing && dm.missing.length);
+    // a failed crowd lookup is not "no marks": leave it out of the cache so the next visit asks again
+    state.cacheable = !dm.error && !ch.error && !(dm.missing && dm.missing.length) && !(crowd.failed && !crowdCands.length);
     if (state.cacheable) { state.cacheTs = Date.now(); cacheResults(info); }
   }
 
@@ -572,7 +589,8 @@
     try {
       const ch = BAS.detectChapters ? BAS.detectChapters(state.viewPoints, info.duration, s) : { candidates: [], boundaries: state.boundaries };
       const dm = s.useDanmaku && mem ? BAS.detectDanmaku(mem, info.duration, s) : { candidates: [] };
-      state.candidates = [].concat(ch.candidates || [], dm.candidates || []);
+      const crowd = state.candidates.filter((c) => c.source === 'crowd');
+      state.candidates = [].concat(ch.candidates || [], crowd, dm.candidates || []);
       state.boundaries = ch.boundaries || state.boundaries;
       applyFusion('keywords');
       if (state.status === 'ready') { state.cacheTs = Date.now(); cacheResults(info); }
@@ -585,7 +603,7 @@
     const bs = state.bridgeState;
     const u = parseUrlIdentity();
     if (bs && bs.cid && (!u || !u.bvid || String(bs.bvid) === String(u.bvid)) && (!u || Number(bs.p || 1) === Number(u.p || 1))) {
-      return { bvid: bs.bvid, aid: bs.aid, cid: bs.cid, p: bs.p || 1, title: bs.title, duration: bs.duration, mid: bs.mid, upName: bs.upName };
+      return { bvid: bs.bvid, aid: bs.aid, cid: bs.cid, p: bs.p || 1, title: bs.title, duration: bs.duration, mid: bs.mid, upName: bs.upName, parts: bs.parts };
     }
     if (!u) return null;
     // The bridge normally answers within a few hundred ms; avoid a redundant view-API call on every page load.
@@ -601,7 +619,7 @@
     try {
       const v = await BAS.api.getView(u.bvid ? { bvid: u.bvid } : { aid: u.aid });
       const page = (v.pages && v.pages[u.p - 1]) || null;
-      const info = { bvid: v.bvid, aid: v.aid, cid: (page && page.cid) || v.cid, p: u.p, title: v.title, duration: (page && page.duration) || v.duration, mid: v.owner && String(v.owner.mid), upName: v.owner && v.owner.name };
+      const info = { bvid: v.bvid, aid: v.aid, cid: (page && page.cid) || v.cid, p: u.p, title: v.title, duration: (page && page.duration) || v.duration, mid: v.owner && String(v.owner.mid), upName: v.owner && v.owner.name, parts: Array.isArray(v.pages) ? v.pages.length : null };
       state.urlInfo = { key, info };
       return info;
     } catch (e) {
@@ -669,6 +687,7 @@
           aid: st.aid, bvid: typeof st.bvid === 'string' ? st.bvid.slice(0, 16) : null, cid: st.cid, p: Number(st.p) || 1,
           duration: Number(st.duration) || 0, title: typeof st.title === 'string' ? st.title.slice(0, 200) : '',
           mid: st.mid != null ? String(st.mid).slice(0, 20) : null, upName: typeof st.upName === 'string' ? st.upName.slice(0, 60) : '',
+          parts: Array.isArray(st.pages) ? Math.min(999, st.pages.length) : null,
         };
         tick();
       } else if (d.type === 'BAS_PLAYER_INFO' && isId(d.cid)) {
@@ -780,7 +799,8 @@
     }
     if (['extraStartKeywords', 'extraEndKeywords', 'useChapters'].some(changed)) { redetectDebounced(); return; }
     if (changed('useHeat') && next.useHeat && !state.heat && state.video) { detect(state.video, { force: true }).catch(() => {}); return; }
-    if (['minConfidence', 'showMarkers', 'mode', 'useMedia', 'useAudio', 'useHeat', 'useAvProbe'].some(changed)) applyFusion('settings');
+    if (changed('useCrowd') && next.useCrowd && state.video && !state.candidates.some((c) => c.source === 'crowd')) { detect(state.video, { force: true }).catch(() => {}); return; }
+    if (['minConfidence', 'showMarkers', 'mode', 'useMedia', 'useAudio', 'useHeat', 'useAvProbe', 'useCrowd'].some(changed)) applyFusion('settings');
   }
   function onStorageChanged(changes, area) {
     if (area !== 'local' || !state.video) return;

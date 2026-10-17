@@ -60,7 +60,7 @@ Deno.test('synthetic: audio-only data still judges segments (no luma term)', () 
 });
 
 Deno.test('apply: only an ad verdict acts, only on ad-specific danmaku, and edges stay as the danmaku gave them', () => {
-  const S = Object.assign({}, BAS.DEFAULT_SETTINGS);
+  const S = Object.assign({}, BAS.DEFAULT_SETTINGS, { useAvProbe: true });
   const c1 = { source: 'danmaku', start: 100, end: 195, confidence: 0.55, reason: 'x', evidence: { targetsAgree: 1, adVocab: 1 } };
   const c2 = { source: 'danmaku', start: 400, end: 500, confidence: 0.8, reason: 'y', evidence: { targetsAgree: 4 } };
   const c3 = { source: 'chapter', start: 600, end: 700, confidence: 0.95, reason: 'z' };
@@ -84,7 +84,7 @@ Deno.test('apply: only an ad verdict acts, only on ad-specific danmaku, and edge
 });
 
 Deno.test('fusion keeps A/V-locked edges and the pre-A/V id', () => {
-  const S = Object.assign({}, BAS.DEFAULT_SETTINGS);
+  const S = Object.assign({}, BAS.DEFAULT_SETTINGS, { useAvProbe: true });
   const cand = { source: 'danmaku', start: 101, end: 203.4, idStart: 100, idEnd: 195, lockEnd: true, confidence: 0.8, reason: '' };
   const segs = BAS.fuse({ candidates: [cand], duration: 900, boundaries: [198], settings: S });
   assert(segs.length === 1, 'one segment');
@@ -209,7 +209,7 @@ Deno.test({ name: 'measured: a press anywhere inside an ad (0.25 s grid) lands w
 });
 
 Deno.test('end zone: "skip to the end" targets are dropped, an ad before a short outro waits for the A/V check', () => {
-  const S = Object.assign({}, BAS.DEFAULT_SETTINGS);
+  const S = Object.assign({}, BAS.DEFAULT_SETTINGS, { useAvProbe: true });
   const dur = 300;
   const filler = []; for (let t = 0; t < dur; t += 2.3) filler.push({ t, text: '哈哈哈' });
   const ad = [[219, '空降4:45'], [220, '空降4:45'], [221, '空降 4:45'], [222, '空降4:45'], [223, '广告来了'], [224, '恰饭了'], [225, '空降4:45'], [226, '空降4:45'], [286, '欢迎回来'], [287, '欢迎回来']];
@@ -266,7 +266,7 @@ Deno.test('fetchRange: only an exact 206 counts; a node ignoring Range is skippe
 });
 
 Deno.test('open-ended danmaku start: A/V supplies the end only when the span looks like an ad', () => {
-  const S = Object.assign({}, BAS.DEFAULT_SETTINGS);
+  const S = Object.assign({}, BAS.DEFAULT_SETTINGS, { useAvProbe: true });
   const d = synth();
   const r = AV.assessOpen(d, 103);
   assert(r.verdict === 'ad' && Math.abs(r.end - 200) <= 0.5 && r.endBy === 'av', 'end found: ' + JSON.stringify(r));
@@ -301,4 +301,18 @@ Deno.test({ name: 'measured: open-ended starts get the right end; content never 
     }
   }
   assert(n > 100, 'enough starts: ' + n);
+});
+
+Deno.test('canChange: media is fetched only when a confirmation could change the outcome', () => {
+  const S = Object.assign({}, BAS.DEFAULT_SETTINGS);
+  const dm = (conf, ev, extra) => Object.assign({ source: 'danmaku', start: 100, end: 190, confidence: conf, evidence: ev }, extra);
+  assert(AV.canChange(dm(0.55, { adVocab: 1 }), S), 'below threshold with ad words → probe');
+  assert(!AV.canChange(dm(0.8, { adVocab: 1 }), S), 'already auto-skipped → nothing to gain');
+  assert(!AV.canChange(dm(0.3, { adVocab: 1 }), S), 'the boost could not reach the threshold → no probe');
+  assert(!AV.canChange(dm(0.55, { targetsAgree: 4 }), S), 'bare coordinates are never boosted → no probe');
+  assert(AV.canChange(dm(0.45, { adVocab: 2 }, { end: null }), S), 'open-ended start with ad words → probe for its end');
+  assert(AV.canChange(dm(0.55, { adVocab: 1, endZone: true }), S), 'end-zone segment → probe');
+  assert(!AV.canChange(dm(0.55, { adVocab: 1 }, { offerOnly: true }), S), 'offers stay offers');
+  assert(!AV.canChange({ source: 'heat', start: 1, end: 90, confidence: 0.5, offerOnly: true, evidence: {} }, S), 'heat offers are not probed');
+  assert(!AV.canChange({ source: 'crowd', start: 1, end: 90, confidence: 0.9, evidence: {} }, S), 'crowd marks are not probed');
 });

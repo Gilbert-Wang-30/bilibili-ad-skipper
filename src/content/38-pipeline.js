@@ -15,7 +15,9 @@
   function buildSegments(input) {
     const s = input.settings || BAS.DEFAULT_SETTINGS;
     const av = input.av instanceof Map ? input.av : new Map();
-    const all = Array.isArray(input.candidates) ? input.candidates : [];
+    const all = (Array.isArray(input.candidates) ? input.candidates : []).filter((c) => c && (c.source !== 'crowd' || s.useCrowd !== false));
+    const crowd = all.filter((c) => c.source === 'crowd' && !c.offerOnly);
+    const decided = (c) => crowd.some((m) => (c.end == null ? c.start >= m.start - 10 && c.start < m.end : Math.min(c.end, m.end) > Math.max(c.start, m.start)));
     // Danmaku clusters without a determinable end are sponsor chatter, not skippable segments: keep them out of the
     // progress bar (fusion would otherwise stretch them to the next chapter boundary) but list them for the popup.
     const isOpen = (c) => c.source === 'danmaku' && (c.end == null || !isFinite(c.end));
@@ -23,7 +25,7 @@
     let usable = all.filter((c) => !isOpen(c));
     const AV = BAS.avSegment;
     const avOn = !!AV && s.useAvProbe !== false && av.size > 0;
-    let avWanted = AV ? openEnded.filter(AV.wants) : [];
+    let avWanted = AV ? openEnded.filter((c) => AV.canChange(c, s) && !decided(c)) : [];
     // The A/V look-ahead can supply the end of a danmaku start cluster that has none (thin danmaku).
     if (avOn) {
       const closed = AV.apply(openEnded, av, s);
@@ -36,7 +38,7 @@
     }
     if (AV) {
       // probe targets are the candidates as the detectors produced them (A/V-closed ones are already done)
-      avWanted = avWanted.concat(usable.filter((c) => AV.wants(c) && !(c.evidence && c.evidence.av)));
+      avWanted = avWanted.concat(usable.filter((c) => !(c.evidence && c.evidence.av) && AV.canChange(c, s) && !decided(c)));
       if (avOn) usable = AV.apply(usable, av, s);
       usable = AV.gate(usable, s);
     }
