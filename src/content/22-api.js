@@ -378,6 +378,16 @@
   const SUBTITLE_URL_RE = /^https:\/\/(?:aisubtitle|i\d)\.hdslb\.com\/bfs\/(?:ai_)?subtitle\//;
   const SUBTITLE_TIMEOUT_MS = 6000;
   const MAX_SUBTITLE_LINES = 20000;
+  /**
+   * getDmViewSubtitles(aid, cid) → [{lan, url}] — the subtitle list of x/v2/dm/view (JSON), which also answers signed-out
+   * viewers (x/player/wbi/v2 lists AI subtitles only to signed-in ones). Undocumented; 46 of 50 sampled videos had ai-zh.
+   */
+  async function getDmViewSubtitles(aid, cid, opts) {
+    const json = await fetchJSON(buildUrl('/x/v2/dm/view', { type: 1, oid: cid, pid: aid }), opts);
+    if (!json || json.code !== 0) throw new ApiError(`字幕列表获取失败（${json ? json.code : '无响应'}）`, { code: json && json.code });
+    const list = json.data && json.data.subtitle && Array.isArray(json.data.subtitle.subtitles) ? json.data.subtitle.subtitles : [];
+    return list.slice(0, 12).map((x) => ({ lan: String((x && x.lan) || '').slice(0, 24), url: String((x && x.subtitle_url) || '').slice(0, 800) })).filter((x) => x.url);
+  }
   /** Chinese first (uploader's own track before the AI one), then English. */
   function pickSubtitle(list) {
     const ok = (Array.isArray(list) ? list : []).filter((x) => x && typeof x.url === 'string' && typeof x.lan === 'string');
@@ -420,7 +430,7 @@
     API, SEGMENT_SEC, DM_CONCURRENCY, ApiError,
     buildUrl, segmentUrl, b64ToBuffer, canProxy,
     fetchJSON, fetchBuffer,
-    getView, getPlayerInfo, getDanmaku, getHeat, getCrowdSegments, sha256Hex, pickSubtitle, getSubtitleBody,
+    getView, getPlayerInfo, getDanmaku, getHeat, getCrowdSegments, sha256Hex, pickSubtitle, getSubtitleBody, getDmViewSubtitles,
     getWbiKeys: (opts) => BAS.wbi.getKeys(opts),
   };
 })();

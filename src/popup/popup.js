@@ -15,6 +15,7 @@
     useHeat: true,
     useCrowd: true,
     useSubtitles: true,
+    useLlm: true,
     useAvProbe: true,
     skipHereMedia: false,
     skipHereButton: true,
@@ -31,7 +32,7 @@
   const REFRESH_MS = 1500;
   const REPLY_TIMEOUT_MS = 2500;
   const VIDEO_URL_RE = /^https:\/\/www\.bilibili\.com\/(video|list|festival)\//;
-  const SOURCE_LABEL = { chapter: '章节', crowd: '众包', subtitle: '字幕', danmaku: '弹幕', user: '手动', media: '音视频', heat: '热度' };
+  const SOURCE_LABEL = { chapter: '章节', crowd: '众包', llm: 'AI', subtitle: '字幕', danmaku: '弹幕', user: '手动', media: '音视频', heat: '热度' };
   const MARKS_KEY = 'popupMarks';
 
   // ---------- pure helpers ----------
@@ -191,6 +192,19 @@
     const stEl = $('status');
     stEl.textContent = s.text;
     stEl.classList.toggle('err', !!s.err);
+    const ai = $('aiLine'), L = st && st.llm;
+    if (!L || L.off) { ai.hidden = true; return; }
+    ai.hidden = false;
+    ai.textContent = '';
+    if (!L.configured) {
+      const a = el('a', 'link', L.missingPermission ? 'AI 字幕分析缺少权限，点此重新保存' : '设置 AI 字幕分析（最准确，约 96%）');
+      a.href = '#';
+      a.addEventListener('click', (ev) => { ev.preventDefault(); try { chrome.runtime.openOptionsPage(); } catch (e) { /* ignore */ } });
+      ai.appendChild(a);
+    } else {
+      ai.textContent = 'AI 字幕分析：' + (L.paused ? '已暂停' : L.status === 'running' ? '分析中…' : L.note || '等待字幕');
+      ai.classList.toggle('err', L.status === 'error');
+    }
   }
 
   function segRow(seg, isDropped) {

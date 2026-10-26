@@ -64,6 +64,8 @@ src/content/20-protobuf.js        BAS.decodeDmSeg(ArrayBuffer|Uint8Array) → Da
 src/content/21-wbi.js             BAS.wbi.sign(params, imgKey, subKey) + md5
 src/content/22-api.js             BAS.api.*
 src/content/28-detect-subtitles.js BAS.detectSubtitles() (§7.9)
+src/content/29-detect-llm.js      BAS.detectLlm — AI transcript check: prompt + answer validation (§7.10)
+src/llm-providers.js              model wire formats (Anthropic / OpenAI-compatible), loaded by background.js (§7.10)
 src/content/30-detect-chapters.js BAS.detectChapters()
 src/content/31-detect-danmaku.js  BAS.detectDanmaku()
 src/content/32-media.js           BAS.MediaAnalyzer
@@ -485,6 +487,50 @@ Following the talk forward without a read was measured worse than the blind step
 Measured (README "AI subtitles"): on the transcripts it was developed on, 46 % of labelled ad time, 33 s of content in 76
 videos, start +2.7 s / end −2.1 s median vs the label; in the pipeline without crowd marks 22 % → 43 % of labelled ads
 auto-skipped, 0 auto-skips on unlabeled content.
+
+### 7.10 AI transcript check — `BAS.detectLlm` (29-detect-llm.js) + `BAS_LLM` (background.js, llm-providers.js)
+
+The primary detector when the viewer has set up a model. Transcript: the subtitle file from §7.9's loader, which also
+asks `x/v2/dm/view?type=1&oid=<cid>&pid=<aid>` when the player's own listing has none (signed-out viewers); an AI file's
+path must contain `<aid><cid>`.
+
+* `buildRequest({title, duration, lines})` → `{system, user, schema, lines, duration, version}`. User message:
+  `Title`, `Duration`, then one line per subtitle `<n>|<m:ss>|<text>` (≤ 4000 lines / 120 000 chars). The system prompt
+  defines an inserted sponsored segment, its boundaries (segue line … last line about the promotion; the first sentence
+  back on topic is content), what is not one (the video's own topic, self-promotion → `self_promo`, passing mentions),
+  and the JSON answer `{segments:[{first,last,kind,product,confidence,first_quote,last_quote}], whole_video_commercial}`.
+* `parseReply(reply, req)`: JSON (plain, fenced or embedded) → candidates `source:'llm'`, edges = `lines[first].from` …
+  `lines[last].to`. Rejected: indices out of range; a quote not found (punctuation-insensitive, first 6 chars) within ±1
+  line of its index; `self_promo`; < 4 s; > 50 % of the video. `kind:'unsure'`, confidence < 0.85 or
+  `whole_video_commercial` → `offerOnly`, confidence ≤ 0.55; otherwise confidence 0.6 + 0.4 × the model's. The 0.85
+  threshold is 0.75 for Claude Opus / Sonnet / Fable (`autoConfidenceFor`; they rate their reads lower). Quotes are
+  required (≥ 2 characters each); any `kind` other than `sponsor` / `self_promo` counts as `unsure`. A read over 360 s,
+  or reads that together cover > 40 % of the video or number more than 5, are all offered (the total is checked, not
+  each read: touching reads would otherwise merge into one long skip).
+* Second question (`buildVerifyRequest` / `parseVerifyReply`): for up to 3 reads offered only because the model hedged
+  (`unsure`, or confidence 0.1–0.85), the passage ±25 lines with its original line numbers goes back with "is lines X–Y
+  an inserted sponsored segment?". `sponsor` → a new candidate with the refined edges (auto-skip at ≥ 0.85; edges must
+  stay inside the passage and within 60 s of the flagged read); `not_sponsor` → dropped; `unsure` / invalid → the offer
+  stays. Cached with the first answer (`a:<cid>.verify`).
+* Request path: content script → `BAS_LLM {request:{system,user,schema}}` → background reads `llmConfig`
+  (`{provider, model, baseUrl, keyHint, rev}`, no key) from `chrome.storage.local` and the key from the extension
+  origin's IndexedDB (`bas-secrets`/`kv`/`apiKey`; content scripts can read storage.local but not this database), checks
+  the optional host permission for that origin, calls the provider (90 s timeout, one retry on 429 / 5xx / network, none
+  on a reply cut at the token cap) → `{ok, text}`. Guards: ≤ 2 in flight, ≤ 60 per hour and ≤ 400 per day
+  (`chrome.storage.session`), the same prompt within 10 min answered once. The options page keeps a saved key only for
+  the same provider at the same origin, and removes the host permission of a service no longer used.
+  Anthropic: `POST /v1/messages`, `anthropic-version: 2026-10-21`, `output_config: {effort:'low', format:{type:'json_schema'}}`,
+  `anthropic-dangerous-direct-browser-access: true`, no sampling parameters. OpenAI-compatible: `POST <base>/chat/completions`,
+  `response_format: json_object`, temperature 0 (not for OpenAI), per-provider extras (thinking off for DeepSeek / GLM,
+  `enable_thinking:false` for Qwen). Keys only over https, or http to localhost.
+* Cache: `a:<cid>` in `chrome.storage.local` = `{fp, v, model, reply, ts}`, 60 days, ≤ 3000 entries; reused only when the
+  transcript fingerprint, prompt version and model match.
+* Orchestrator: the request starts as soon as the transcript is in, without holding up the other sources; its answer
+  replaces the word-list reads (`source:'subtitle'`) of the same transcript and is merged and re-fused when it arrives.
+  A fresh result cache made without it does not short-circuit the run while a model is set up. Setting or removing a
+  model in the options applies to the open video. The skip button waits up to 6 s for a running request.
+* Fusion (§7.4 step 2): a non-offer `llm` read is a host like chapters and crowd marks (danmaku and word-list reads
+  overlapping it merge into it); priority between crowd and subtitle.
 
 ## 8. Skipper — `new BAS.Skipper(video, opts)`
 

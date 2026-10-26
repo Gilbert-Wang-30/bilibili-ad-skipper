@@ -66,7 +66,7 @@ switch (cmd) {
   case 'evalfile': {
     const expression = cmd === 'evalfile' ? await Deno.readTextFile(args[1]) : args[1];
     await withTarget(args[0], async (s) => {
-      const r = await s.send('Runtime.evaluate', { expression: wrapExpr(expression), awaitPromise: true, returnByValue: true, timeout: 60000 });
+      const r = await s.send('Runtime.evaluate', { expression: wrapExpr(expression), awaitPromise: true, returnByValue: true, userGesture: true, timeout: 60000 });
       if (r.exceptionDetails) out({ error: r.exceptionDetails.text, detail: r.exceptionDetails.exception && r.exceptionDetails.exception.description });
       else out(r.result.value === undefined ? { type: r.result.type, description: r.result.description } : r.result.value);
     });

@@ -19,11 +19,15 @@ function checkHtml(html, scriptName) {
   assert(!/\son[a-z]+\s*=/i.test(html), 'no inline event handlers');
   assert(!/javascript:/i.test(html), 'no javascript: URLs');
   const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
-  assertEquals(scripts.length, 1, 'exactly one script tag');
-  assert(new RegExp(`src="${scriptName}"`).test(scripts[0][1]), 'script is external');
-  assertEquals(scripts[0][2].trim(), '', 'script body is empty');
+  assert(scripts.length >= 1, 'a script tag');
+  for (const sc of scripts) {
+    assert(/\ssrc="(?!https?:)[^"]+\.js"/.test(sc[1]), 'every script is a local file: ' + sc[0]);
+    assertEquals(sc[2].trim(), '', 'script body is empty');
+  }
+  assert(new RegExp(`src="${scriptName}"`).test(scripts[scripts.length - 1][1]), 'the page script comes last');
   assert(!/<style[\s>]/i.test(html), 'no inline <style> (keep CSS in the .css file)');
-  assert(!/https?:\/\/(?!space\.bilibili\.com)/.test(html.replace(/<!--[\s\S]*?-->/g, '')), 'no remote resources');
+  // example text may name this machine (an Ollama address); nothing else may point off the extension
+  assert(!/https?:\/\/(?!space\.bilibili\.com|localhost[:/])/.test(html.replace(/<!--[\s\S]*?-->/g, '')), 'no remote resources');
   for (const m of html.matchAll(/<button\b([^>]*)>/gi)) assert(/type="button"/.test(m[1]), 'every <button> has type="button": ' + m[0]);
 }
 
