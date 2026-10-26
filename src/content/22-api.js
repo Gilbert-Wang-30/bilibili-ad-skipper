@@ -373,11 +373,54 @@
     return entry && Array.isArray(entry.segments) ? entry.segments.slice(0, 50) : [];
   }
 
+  // ---------- AI subtitles ----------
+  // Files the player lists in x/player/wbi/v2 data.subtitle (AI: aisubtitle.hdslb.com, uploader's: i0.hdslb.com).
+  const SUBTITLE_URL_RE = /^https:\/\/(?:aisubtitle|i\d)\.hdslb\.com\/bfs\/(?:ai_)?subtitle\//;
+  const SUBTITLE_TIMEOUT_MS = 6000;
+  const MAX_SUBTITLE_LINES = 20000;
+  /** Chinese first (uploader's own track before the AI one), then English. */
+  function pickSubtitle(list) {
+    const ok = (Array.isArray(list) ? list : []).filter((x) => x && typeof x.url === 'string' && typeof x.lan === 'string');
+    const rank = (lan) => {
+      const l = lan.toLowerCase();
+      if (/^zh/.test(l)) return 0;
+      if (/^ai-zh/.test(l)) return 1;
+      if (/^(ai-)?en/.test(l)) return 2;
+      return 9;
+    };
+    const best = ok.filter((x) => rank(x.lan) < 9).sort((a, b) => rank(a.lan) - rank(b.lan))[0];
+    return best || null;
+  }
+  /** getSubtitleBody(url) → [{from, to, content}] — one CDN file, fetched like the player does, without cookies. */
+  async function getSubtitleBody(url, opts) {
+    let u = String(url || '');
+    if (u.startsWith('//')) u = 'https:' + u;
+    else if (u.startsWith('http://')) u = 'https://' + u.slice(7);
+    if (!SUBTITLE_URL_RE.test(u)) throw new ApiError('字幕地址不受支持', { url: u.replace(/\?.*$/, '').slice(0, 120) });
+    const t = withTimeout(opts && opts.signal, SUBTITLE_TIMEOUT_MS);
+    try {
+      const resp = await fetch(u, { credentials: 'omit', cache: 'force-cache', signal: t.signal });
+      if (!resp.ok) throw new ApiError(`字幕下载失败（HTTP ${resp.status}）`, { status: resp.status });
+      const j = await resp.json();
+      const body = j && Array.isArray(j.body) ? j.body.slice(0, MAX_SUBTITLE_LINES) : [];
+      const out = [];
+      for (const r of body) {
+        const from = Number(r && r.from), to = Number(r && r.to);
+        if (isFinite(from) && isFinite(to) && to >= from && typeof (r && r.content) === 'string') out.push({ from, to, content: r.content.slice(0, 300) });
+      }
+      return out;
+    } catch (e) {
+      if (opts && opts.signal && opts.signal.aborted) throw abortError();
+      if (isAbort(e)) throw new ApiError('字幕下载超时', {});
+      throw e;
+    } finally { t.cleanup(); }
+  }
+
   BAS.api = {
     API, SEGMENT_SEC, DM_CONCURRENCY, ApiError,
     buildUrl, segmentUrl, b64ToBuffer, canProxy,
     fetchJSON, fetchBuffer,
-    getView, getPlayerInfo, getDanmaku, getHeat, getCrowdSegments, sha256Hex,
+    getView, getPlayerInfo, getDanmaku, getHeat, getCrowdSegments, sha256Hex, pickSubtitle, getSubtitleBody,
     getWbiKeys: (opts) => BAS.wbi.getKeys(opts),
   };
 })();

@@ -2,7 +2,7 @@
 (() => {
   if (globalThis.BAS && globalThis.BAS.__loaded) return;
 
-  const VERSION = '0.5.0';
+  const VERSION = '0.6.0';
 
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
@@ -14,8 +14,9 @@
     useAudio: false,
     useHeat: true,
     useCrowd: true,         // crowd-marked segments from BilibiliSponsorBlock (39-detect-crowd.js)
+    useSubtitles: true,     // sponsor reads in the AI subtitles the player already lists (28-detect-subtitles.js)
     useAvProbe: true,       // audio/video check of likely ads the danmaku alone cannot confirm (37-av-segment.js)
-    skipHereMedia: true,    // the skip button measures the ad's end from the video's own audio/picture
+    skipHereMedia: false,   // the skip button also measures the end from the media (slow; off: it answers at once)
     skipHereButton: true,   // control-bar button to skip an ad the detectors missed
     showMarkers: true,
     showToast: true,

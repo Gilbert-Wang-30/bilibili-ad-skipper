@@ -5,8 +5,11 @@
  *   1. an existing segment / candidate covering t (low-confidence, ignored, offer or dropped) → its end;
  *   2. 空降 coordinates posted from LOOK_BACK s before t up to 60 s after it that point past t (≥ 2 agreeing);
  *   3. landing markers (欢迎回来 / 空降成功 / 感谢NNN工程 …) posted after t;
- *   4. the viewer-heat ramp that contains t → its peak (±half a heat sample);
- *   5. a single coordinate; 6. the next chapter boundary; 7. otherwise step forward FALLBACK_STEP s.
+ *   4. the sponsor read in the AI subtitles that contains t (28-detect-subtitles.js readEndAt);
+ *   5. the viewer-heat ramp that contains t → its peak (±half a heat sample);
+ *   6. a single coordinate; 7. a chapter boundary ≤ 20 s ahead; 8. otherwise step forward FALLBACK_STEP s.
+ * Order measured on 252 presses inside crowd-labelled ads: within 3 s of the end — targets 92 %, landing markers 81 %,
+ * subtitle read 54–82 %, heat 67 %, single coordinate 50 %, blind step 21 %.
  * Pure: no DOM / chrome.* access.
  */
 (() => {
@@ -18,7 +21,9 @@
   const LOOK_AHEAD = 300;     // longest ad remainder we accept
   const MIN_AHEAD = 4;        // the end must be at least this far ahead of now
   const TOL = 10;             // targets within this many seconds agree
-  const FALLBACK_STEP = 30;
+  // A blind step: measured on 930 presses inside crowd-labelled ads, every step size cuts content on the last press;
+  // a short one cuts least and the toast offers 再前进.
+  const FALLBACK_STEP = 15;
   // cheap pre-filter before running the full classifier on a danmaku (digits, numerals, jump / landing words)
   const QUICK = /[\d０-９零〇一二三四五六七八九十洞幺两拐勾]|空降|跳|指路|坐标|正片|谢|thx|3q|回来|着陆|落地|降落|穿越|欢迎|成功|结束|躲过|逃过|→|右/i;
 
@@ -30,7 +35,8 @@
 
   /**
    * @param {{t:number, duration:number, danmaku?:Array<{t:number,text:string,action?:string}>, heat?:object,
-   *          boundaries?:number[], candidates?:Array<{start:number,end:number|null,confidence?:number}>}} ctx
+   *          boundaries?:number[], candidates?:Array<{start:number,end:number|null,confidence?:number}>,
+   *          subtitles?:Array<{from:number,to:number,content:string}>}} ctx  subtitles: the AI subtitle body
    * @returns {{end:number, start:number, source:string, reason:string, evidence:object}|null} null when too close to the end
    */
   function findAdEnd(ctx) {
@@ -113,13 +119,20 @@
         if (!heatRun || r.ratio > heatRun.ratio) heatRun = r;
       }
     }
-    // 6) next chapter boundary
+    // 4) the sponsor read in the subtitles
+    let read = null;
+    if (BAS.detectSubtitles && Array.isArray(c0.subtitles) && c0.subtitles.length) {
+      try { read = BAS.detectSubtitles.readEndAt(c0.subtitles, t, isFinite(dur) ? dur : 0); } catch (e) { read = null; }
+      if (read && !(read.end >= lo && read.end <= hi + 1)) read = null;
+    }
+    // 7) next chapter boundary
     const nextBoundary = (Array.isArray(c0.boundaries) ? c0.boundaries : []).filter((b) => isFinite(b) && b >= lo && b <= hi).sort((a, b) => a - b)[0];
 
     evidence.targets = group ? group.slice(0, 20).map((x) => ({ t: x.t, text: x.text, target: x.v })) : [];
     evidence.thanks = thanks ? thanks.slice(0, 20) : [];
     evidence.heat = heatRun ? { start: heatRun.start, end: heatRun.end, peakEnd: heatRun.peakEnd } : null;
     evidence.chapter = nextBoundary != null ? nextBoundary : null;
+    evidence.subtitle = read ? { start: read.start, end: read.end } : null;
 
     const strongTargets = group && (group.filter((x) => !x.weak).length >= 2 || group.length >= 3);
     let end, source, reason, start = t;
@@ -134,6 +147,8 @@
       start = Math.min(t, U.median(cues) + 2);                       // same calibrated rule as the detector
     } else if (teThanks != null) {
       end = teThanks; source = 'thanks'; reason = '弹幕落地确认 ' + thanks.length + ' 条（欢迎回来 / 空降成功 …）';
+    } else if (read) {
+      end = read.end; source = 'subtitle'; reason = read.reason; start = Math.min(t, read.start);
     } else if (heatRun) {
       // The real end lies within about one heat sample of the peak's end. If we are already past the middle of that
       // window (e.g. a second press after an early landing), jump to its far half instead of creeping forward.
@@ -142,7 +157,8 @@
       source = 'heat'; reason = '播放热度峰值'; start = Math.min(t, heatRun.start + s);
     } else if (group) {
       end = teTarget; source = 'target'; reason = '弹幕空降 1 条';
-    } else if (nextBoundary != null) {
+    } else if (nextBoundary != null && nextBoundary - t <= 20) {
+      // the next chapter boundary was 54 s past the ad's end (median) on crowd-labelled ads: only a near one counts
       end = nextBoundary; source = 'chapter'; reason = '下一章节';
     } else {
       end = Math.min(hi, t + FALLBACK_STEP); source = 'fallback'; reason = '未找到广告结尾，前进 ' + Math.round(end - t) + ' 秒';

@@ -63,6 +63,7 @@ src/content/10-storage.js         settings + per-video overrides + result cache
 src/content/20-protobuf.js        BAS.decodeDmSeg(ArrayBuffer|Uint8Array) → Danmaku[]
 src/content/21-wbi.js             BAS.wbi.sign(params, imgKey, subKey) + md5
 src/content/22-api.js             BAS.api.*
+src/content/28-detect-subtitles.js BAS.detectSubtitles() (§7.9)
 src/content/30-detect-chapters.js BAS.detectChapters()
 src/content/31-detect-danmaku.js  BAS.detectDanmaku()
 src/content/32-media.js           BAS.MediaAnalyzer
@@ -290,6 +291,9 @@ Step E — merge overlapping candidates (keep the higher confidence, union the r
 
 1. Drop candidates from disabled sources (`useChapters`, `useDanmaku`).
 2. Chapter candidates are authoritative: any danmaku candidate overlapping a chapter candidate (> 40 % of itself) is merged into it (sources += 'danmaku').
+   Crowd marks (§7.8) are hosts the same way, for danmaku and subtitle candidates. Then each remaining subtitle read
+   (§7.9) hosts the danmaku candidates overlapping it: absorbed without changing its edges, except a confident one
+   (≥ minConfidence, not offer-only) with IoU ≥ 0.5, which widens it to the union (+0.05).
 3. For danmaku candidates: snap `start` to the nearest chapter `boundary` within 10 s; else to the strongest `media.nearestCut(start, 4)`.
    Snap `end` similarly (boundary within 10 s, else cut within 4 s). If `end === null`: use the next chapter boundary after start if it is within 300 s (confidence 0.5), else drop the candidate (keep it in `diagnostics.dropped`).
    Edges with `lockStart` / `lockEnd` (measured by the A/V look-ahead, §7.7) are not snapped; ids use `idStart` / `idEnd`
@@ -331,12 +335,17 @@ For ads the detectors missed. The viewer presses the control-bar ⏭ button (`.b
 needed, and weak evidence is acceptable because a human confirmed the ad. Order of trust: an existing segment/candidate
 covering now (any confidence, incl. ignored/dropped) → ≥ 2 agreeing 空降 targets posted in [t−150, t+60] → landing-marker
 cluster after now → heat ramp containing now (its peak end; a second press past the middle jumps half a sample further)
-→ a single target → next chapter boundary → +30 s. Danmaku are loaded on demand when results came from the cache.
+→ … the subtitle read containing now (§7.9 `readEndAt`; before heat) … → a single target → a chapter boundary ≤ 20 s
+ahead (a farther one was a median 54 s past the ad's end) → +15 s. When results came from the cache, danmaku (with the
+bridge's preloaded segments) and subtitles are loaded with a 2.5 s deadline; the press never waits longer.
+Measured on 252 presses at ¼ / ½ / ¾ of crowd-labelled ads, within 3 s of the end: targets 92 %, landing markers 81 %,
+subtitle read 54–82 %, heat 67 %, single target 50 %, blind step 21 %; all together 65 % (61 % without subtitles).
 The toast offers 撤销 (seek back) and 记住 (store `[start estimate, end]` as a user segment). Measured: presses early /
 mid / late in the 7 ads land within 10 s every time (16/21 within 3 s) at full density; with 1/10 of the danmaku 18/21
 within 3 s; with heat only ±17 s.
 
-When the A/V look-ahead is on (§7.7) and the press is not inside a known segment, the media after the press is analysed
+When `skipHereMedia` is on (default off since 0.6.0: the wait was the main complaint, and on 124 crowd-labelled ads the
+media end was within 3 s only 13 % of the time) and the press is not inside a known segment, the media after the press is analysed
 first (`[t−25, t+130]`, then `[t+115, t+300]`, at most 10 s): the first transition with end-likeness ≥ 2.0 wins
 (source `'av'`). Measured: 35 presses early/mid/late in the 7 ads land −2.1 … +0.2 s from the real end.
 
@@ -397,7 +406,7 @@ detection run, stops when the run or the URL changes, and re-schedules itself fo
 
 Skip-here after any wait (danmaku download, A/V analysis): if the viewer seeked, navigated or the element changed,
 nothing happens; if the measured end, or a real estimate (candidate / targets / thanks / heat / chapter), is already
-behind the playhead, a toast says the ad is over; only the blind +30 s step is recomputed from the current position
+behind the playhead, a toast says the ad is over; only the blind +15 s step is recomputed from the current position
 (keeping the press-time start for 记住). The skipper judges suppressions (a segment the viewer chose to watch) by the segment's current range,
 since A/V refinement can move edges under the same id.
 
@@ -442,6 +451,41 @@ Elsewhere:
 * With `useCrowd` off, crowd candidates are ignored everywhere, the skip button included.
 * A failed lookup keeps marks already known from the cache, and is never cached as "no marks".
 
+### 7.9 AI subtitles — `BAS.detectSubtitles(lines, duration, settings)` (28-detect-subtitles.js) → `{candidates, rejected, lines}`
+
+Input: the subtitle body `[{from, to, content}]`. Source (50-main.js `loadSubtitles`): the subtitle list in the player's
+own `x/player/wbi/v2` response, forwarded by the bridge (`BAS_PLAYER_INFO.subtitles [{lan, url}]`, `signed`); the bridge
+replays the last player infos on `BAS_REQUEST_STATE`, since the player asks before the content script listens. Waits up
+to 4 s for it; no API call of its own. Track: `zh*`, then `ai-zh`, then English. File: `BAS.api.getSubtitleBody` —
+only `https://(aisubtitle|i\d).hdslb.com/bfs/(ai_)?subtitle/…`, no cookies, 6 s timeout, ≤ 20 000 lines. A file whose last
+line is past `duration + 5` or before `duration − max(60, 25 %)` (unsigned listing: `max(30, 10 %)`) is another video's
+and is ignored. Setting `useSubtitles` (default true). A failed download keeps reads from the cache and is not cached.
+
+Line vocabulary (weights from video-level frequency on 76 crowd-labelled transcripts): 3 = calls to action (链接, 置顶,
+下单, 领券, 运费险, 保价 …, in the content of ≤ 1 video), 2 = shopping talk (评论区, 这款, 京东 …), 1 = common words that
+only support. English: a few regexes (sponsored by, use code, link in the description …).
+
+Algorithm:
+1. Seeds: runs of weight-3 lines ≤ 90 s apart.
+2. Product terms of a seed: 2–4-grams in ≥ 3 lines of `[c0 − 180, c1 + 40]`, at least one within `[c0 − 40, c1 + 20]`, at
+   least one in a line with vocabulary, none elsewhere in the video; no function-character fragments, no number fragments,
+   longest form kept.
+3. Start: a line matching the opener pattern (本期的推广位 / 本期视频由…赞助 / 恰饭 …) inside the seed is the start;
+   otherwise grow back ≤ 150 s over lines with vocabulary or a product term, gaps ≤ 20 s, stopping at an opener; then one
+   segue line (说到 / 话说 / 对了 …) right before.
+4. End: grow forward over lines with weight ≥ 2 or a product term, gaps ≤ 6 s.
+5. Accept: ≥ 2 different weight-3 terms with (score ≥ 8 or a product term) and ≥ 3 lines → confidence 0.75 + 0.03 per extra
+   term (+0.03 with a product term, ≤ 0.9); exactly one → needs a product term, score ≥ 8, ≥ 5 lines → 0.55 (offered).
+   Length 12–300 s. Rejected regions are returned for the skip button.
+6. More than 3 reads, or reads covering > 35 % of the video: all offer-only, ≤ 0.5 (a shopping video).
+
+`readEndAt(lines, t, duration)`: the accepted or rejected read containing t → its end (`findAdEnd` source `subtitle`).
+Following the talk forward without a read was measured worse than the blind step and is not done.
+
+Measured (README "AI subtitles"): on the transcripts it was developed on, 46 % of labelled ad time, 33 s of content in 76
+videos, start +2.7 s / end −2.1 s median vs the label; in the pipeline without crowd marks 22 % → 43 % of labelled ads
+auto-skipped, 0 auto-skips on unlabeled content.
+
 ## 8. Skipper — `new BAS.Skipper(video, opts)`
 
 `opts = { getSegments: () => Segment[], getSettings: () => settings, onSkip(seg, from), onEnter(seg), onLeave(seg) }`
@@ -471,7 +515,11 @@ Elsewhere:
 3. Per video run (cancellable via AbortController):
    * if `settings.ignoreUps` contains mid → status `ignored`, clear UI, return.
    * cache hit (12 h, same `BAS.VERSION`) → use immediately, still refresh in background.
-   * in parallel: `getPlayerInfo` → `detectChapters`; `getDanmaku` (with bridge-preloaded segments) → `detectDanmaku`.
+   * in parallel: `getPlayerInfo` → `detectChapters`; `getDanmaku` (with bridge-preloaded segments) → `detectDanmaku`;
+     crowd lookup → `detectCrowd`; subtitles → `detectSubtitles`. One `[BAS] BV…: 章节 n · 众包 n · 字幕 … · 弹幕 N 条→k ·
+     热度 有/无 → segments` console line per run.
+   * 1.5 s after boot, a self-check (`BAS_PING` → background version / crowd permission; required modules present)
+     shows a 20 s toast when Chrome still runs an older manifest than the files (unpacked extension not reloaded).
    * `fuse` → `segments`; `ui.renderMarkers`; `skipper` segments updated; cache; badge message to background `{type:'BAS_BADGE', count}`.
    * MediaAnalyzer attached if `useMedia||useAudio`; on each new cut within 6 s of any segment boundary → debounce 500 ms → re-`fuse` + re-render (do not re-run detectors).
    * A/V look-ahead of suspected segments in the background (§7.7); each verdict → re-`fuse` + re-render + cache.
@@ -487,7 +535,7 @@ Elsewhere:
 * Hook `history.pushState/replaceState` + `popstate` → post `BAS_PAGE_STATE` (debounced 200 ms) built from `__INITIAL_STATE__` and `location`:
   `{aid, bvid, cid, p, duration, title, mid, upName, pages:[{cid,part,duration}]}` (cid for current p via `videoData.pages[p-1].cid`, fallback `__INITIAL_STATE__.cid`).
   Also post on `DOMContentLoaded`, on `BAS_REQUEST_STATE`, and poll `__INITIAL_STATE__.cid` every 1 s for changes (bilibili mutates state in place on part switch).
-* Hook `window.fetch` and `XMLHttpRequest.prototype.open/send`: for URLs containing `/x/player/wbi/v2` or `/x/player/v2` post `BAS_PLAYER_INFO {aid,cid,view_points}`;
+* Hook `window.fetch` and `XMLHttpRequest.prototype.open/send`: for URLs containing `/x/player/wbi/v2` or `/x/player/v2` post `BAS_PLAYER_INFO {aid,cid,view_points,subtitles:[{lan,url}],signed}` (kept for the last 5 cids and re-posted on `BAS_REQUEST_STATE`);
   for `/x/v2/dm/web/seg.so` or `/x/v2/dm/wbi/web/seg.so` post `BAS_DM_SEG {oid, segment_index, buffer}` (clone the Response and read `arrayBuffer()`; post with transfer list).
   Wrap everything in try/catch; never break the original call; never alter responses.
 * Expose `window.__BAS_BRIDGE__ = {version}` for debugging. Message envelope: `{__bas:true, type, ...payload}` via `window.postMessage(msg, location.origin)`.

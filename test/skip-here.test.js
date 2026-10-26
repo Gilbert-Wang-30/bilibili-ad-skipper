@@ -40,10 +40,12 @@ Deno.test('findAdEnd: heat ramp containing now; a second press near its peak jum
   assertEquals(b.end, 387.5);
 });
 
-Deno.test('findAdEnd: chapter boundary, then a 30 s step, and null near the end of the video', () => {
-  assertEquals(F({ t: 100, duration: 900, boundaries: [50, 160, 400] }).end, 160);
+Deno.test('findAdEnd: only a near chapter boundary, then a 15 s step, and null near the end of the video', () => {
+  assertEquals(F({ t: 100, duration: 900, boundaries: [50, 115, 400] }).end, 115);
+  // a far boundary was 54 s past the ad's end (median) on crowd-labelled ads: not used
+  assertEquals(F({ t: 100, duration: 900, boundaries: [50, 160, 400] }).source, 'fallback');
   const f = F({ t: 100, duration: 900 });
-  assertEquals([f.source, f.end], ['fallback', 130]);
+  assertEquals([f.source, f.end], ['fallback', 115]);
   assertEquals(F({ t: 897, duration: 900 }), null);
   assertEquals(F({ t: NaN, duration: 900 }), null);
 });

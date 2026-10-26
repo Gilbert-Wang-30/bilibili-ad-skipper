@@ -1,11 +1,12 @@
 /* Bilibili Ad Skipper — MAIN-world bridge.
  * Runs at document_start inside the page's own JS world. It (1) publishes the current video identity read from
- * window.__INITIAL_STATE__, (2) observes player API responses the page already fetches (chapters, danmaku segments)
+ * window.__INITIAL_STATE__, (2) observes player API responses the page already fetches (chapters, subtitle list,
+ * danmaku segments, heat)
  * and forwards them to the isolated-world content script via window.postMessage. It never alters any request/response.
  */
 (() => {
   if (window.__BAS_BRIDGE__) return;
-  const VERSION = '0.5.0';
+  const VERSION = '0.6.0';
   const ORIGIN = location.origin;
   const post = (msg, transfer) => {
     try { window.postMessage(Object.assign({ __bas: true }, msg), ORIGIN, transfer || []); } catch (e) { /* ignore */ }
@@ -56,7 +57,11 @@
   window.addEventListener('DOMContentLoaded', () => publishState(true));
   window.addEventListener('message', (ev) => {
     if (ev.source !== window || !ev.data || !ev.data.__bas) return;
-    if (ev.data.type === 'BAS_REQUEST_STATE') publishState(true);
+    if (ev.data.type === 'BAS_REQUEST_STATE') {
+      publishState(true);
+      // the player usually asks for its info before the content script is listening: say it again
+      for (const m of playerInfos.values()) post(m);
+    }
     if (ev.data.type === 'BAS_PLAYER_SEEK' && typeof ev.data.t === 'number') {
       try { if (window.player && typeof window.player.seek === 'function') window.player.seek(ev.data.t); } catch (e) {}
     }
@@ -71,13 +76,26 @@
   const PBP_RE = /\/\/bvc\.bilivideo\.com\/pbp\/data(\?|$)/;   // 高能进度条 heat curve
   const JSON_RE = { test: (u) => PLAYER_RE.test(u) || PBP_RE.test(u) };
 
+  const playerInfos = new Map();   // cid → last BAS_PLAYER_INFO message
+  function subtitleList(data) {
+    const list = data && data.subtitle && Array.isArray(data.subtitle.subtitles) ? data.subtitle.subtitles : [];
+    return list.slice(0, 12).map((x) => ({ lan: String((x && x.lan) || '').slice(0, 24), url: String((x && x.subtitle_url) || '').slice(0, 800) })).filter((x) => x.url);
+  }
   function handleJSON(url, text) {
     if (PBP_RE.test(url)) { handleHeat(url, text); return; }
     if (!PLAYER_RE.test(url)) return;
     try {
       const j = JSON.parse(text);
       if (j && j.code === 0 && j.data) {
-        post({ type: 'BAS_PLAYER_INFO', aid: j.data.aid, cid: j.data.cid, bvid: j.data.bvid, view_points: Array.isArray(j.data.view_points) ? j.data.view_points : [] });
+        const msg = {
+          type: 'BAS_PLAYER_INFO', aid: j.data.aid, cid: j.data.cid, bvid: j.data.bvid,
+          view_points: Array.isArray(j.data.view_points) ? j.data.view_points : [],
+          // AI subtitles are listed only for signed-in viewers; an unsigned request can list another video's file
+          subtitles: subtitleList(j.data), signed: /[?&]w_rid=/.test(url),
+        };
+        playerInfos.set(String(j.data.cid), msg);
+        if (playerInfos.size > 5) playerInfos.delete(playerInfos.keys().next().value);
+        post(msg);
       }
     } catch (e) { /* ignore */ }
   }

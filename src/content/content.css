@@ -243,6 +243,7 @@
 .bas-marker[data-source="media"]   { --bas-marker-color: #40a9ff; }
 .bas-marker[data-source="heat"]    { --bas-marker-color: #faad14; }
 .bas-marker[data-source="crowd"]   { --bas-marker-color: #9254de; }
+.bas-marker[data-source="subtitle"] { --bas-marker-color: #13a8a8; }
 .bas-markers--shadow { z-index: 3; }
 
 /* Only the main bar's markers take pointer events (for the hover title). Events still bubble

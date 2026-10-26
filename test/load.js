@@ -8,6 +8,7 @@ const PURE_MODULES = [
   '10-storage.js',
   '20-protobuf.js',
   '21-wbi.js',
+  '28-detect-subtitles.js',
   '30-detect-chapters.js',
   '31-detect-danmaku.js',
   '34-detect-heat.js',

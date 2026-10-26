@@ -95,6 +95,7 @@ button:disabled { opacity: .5; cursor: default; }
 .badge.media { background: var(--media); }
 .badge.heat { background: var(--heat); }
 .badge.crowd { background: #9254de; }
+.badge.subtitle { background: #13a8a8; }
 .badge.low { background: transparent; color: var(--fg2); border: 1px solid var(--line); }
 .conf { color: var(--fg2); font-size: 12px; font-variant-numeric: tabular-nums; }
 .seg-reason {

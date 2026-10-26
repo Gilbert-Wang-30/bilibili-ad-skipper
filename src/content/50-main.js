@@ -19,6 +19,8 @@
   const AV_VIDEO_MAX_SPAN = 330;      // above this (incl. context) only the audio track is fetched
   const AV_SKIP_HERE_MS = 10000;      // the skip button waits at most this long for the A/V answer
   const AV_MAX_BYTES = 60 * 1024 * 1024;   // background look-ahead budget per video
+  const SUB_WAIT_MS = 4000;           // wait this long for the player's own info (it lists the subtitle files)
+  const SKIP_WAIT_MS = 2500;          // the skip button never waits longer than this for danmaku / subtitles
 
   const state = {
     video: null,               // {bvid, aid, cid, p, title, duration, mid, upName}
@@ -44,6 +46,8 @@
     preloadedDm: new Map(),    // cid(string) -> Map(segmentIndex -> Danmaku[])
     bridgePlayerInfo: new Map(), // cid(string) -> view_points
     bridgeHeat: new Map(),     // cid(string) -> parsed heat curve captured from the player's own request
+    bridgeSubs: new Map(),     // cid(string) -> {list:[{lan,url}], signed} subtitle files listed in the player's own request
+    subtitles: null,           // {cid, lines, lan} — prepared AI subtitle lines of the current video (skip button)
     heat: null,                // parsed 高能进度条 curve for the current video {step, values, events}
     heatAnalysis: null,        // BAS.detectHeat.analyse(heat)
     lastDanmaku: null,         // {cid, list} — kept so keyword edits can re-run detection without re-downloading
@@ -210,18 +214,30 @@
     try { v.addEventListener('seeking', onSeeking); } catch (e) { /* ignore */ }
     try {
       let list = state.lastDanmaku && state.lastDanmaku.cid === info.cid ? state.lastDanmaku.list : null;
-      if (!list) {
-        // results came from the cache (or danmaku analysis is off): load the danmaku now
-        const wait = BAS.ui ? BAS.ui.showToast({ text: '正在查找广告结尾…', durationMs: 8000, force: true }) : null;
-        try { list = await BAS.api.getDanmaku(info.aid, info.cid, info.duration, {}); state.lastDanmaku = { cid: info.cid, list }; }
-        catch (e) { BAS.debug('skip-here: danmaku unavailable', e); list = []; }
+      let subs = state.subtitles && state.subtitles.cid === String(info.cid) ? state.subtitles.lines : null;
+      const wantSubs = !subs && settings().useSubtitles !== false && !!BAS.detectSubtitles;
+      if (!list || wantSubs) {
+        // results came from the cache: load what is missing, but never hold the press up for long
+        const wait = BAS.ui ? BAS.ui.showToast({ text: '正在查找广告结尾…', durationMs: SKIP_WAIT_MS + 1000, force: true }) : null;
+        const deadline = (p) => Promise.race([p, new Promise((res) => setTimeout(() => res(null), SKIP_WAIT_MS))]);
+        const tasks = [];
+        if (!list) {
+          const preloaded = state.preloadedDm.get(String(info.cid));
+          tasks.push(deadline(BAS.api.getDanmaku(info.aid, info.cid, info.duration, { preloaded }).then((l) => {
+            if (state.video && state.video.cid === info.cid) state.lastDanmaku = { cid: info.cid, list: l };
+            return l;
+          })).then((l) => { list = l; }).catch((e) => { BAS.debug('skip-here: danmaku unavailable', e); }));
+        }
+        if (wantSubs) tasks.push(deadline(loadSubtitles(info, null)).then((x) => { subs = x && x.lines; }).catch(() => {}));
+        await Promise.all(tasks);
         if (wait) wait.close();
+        if (!list) list = [];
         if (!stillHere()) return null;
       }
       const dur = info.duration || (isFinite(v.duration) ? v.duration : 0);
       let r = BAS.findAdEnd({
         t, duration: dur, danmaku: list, heat: state.heatAnalysis,
-        boundaries: state.boundaries, candidates: knownSpans(),
+        boundaries: state.boundaries, candidates: knownSpans(), subtitles: subs,
       });
       if (!r) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
       // Unless the press is inside a segment we already know, measure the end from the video's own audio/picture:
@@ -243,7 +259,7 @@
       if (r.end <= now + 1) {
         // a real end estimate that is already behind us means the ad is over; only a blind step is recomputed
         if (r.source !== 'fallback') { if (BAS.ui) BAS.ui.showToast({ text: '广告已经结束', force: true }); return null; }
-        const again = BAS.findAdEnd({ t: now, duration: dur, danmaku: list, heat: state.heatAnalysis, boundaries: state.boundaries, candidates: knownSpans() });
+        const again = BAS.findAdEnd({ t: now, duration: dur, danmaku: list, heat: state.heatAnalysis, boundaries: state.boundaries, candidates: knownSpans(), subtitles: subs });
         if (!again) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
         r = Object.assign({}, again, { start: Math.min(again.start, r.start) });
       }
@@ -469,6 +485,33 @@
     }).catch(() => {});
   }
 
+  /**
+   * The AI subtitles of this video: the file the player itself lists (bridge), downloaded once from bilibili's subtitle
+   * CDN. A file whose last line is far from the video's end belongs to another video and is ignored.
+   * @returns {Promise<{lines: object[]|null, lan?: string, note: string}>}
+   */
+  async function loadSubtitles(info, signal) {
+    const cid = String(info.cid);
+    if (state.subtitles && state.subtitles.cid === cid) return { lines: state.subtitles.lines, lan: state.subtitles.lan, note: '已读取' };
+    let entry = state.bridgeSubs.get(cid);
+    for (let waited = 0; !entry && waited < SUB_WAIT_MS; waited += 250) {
+      await new Promise((r) => setTimeout(r, 250));
+      if (signal && signal.aborted) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
+      entry = state.bridgeSubs.get(cid);
+    }
+    if (!entry) return { lines: null, note: '播放器未提供字幕列表' };
+    const pick = BAS.api.pickSubtitle(entry.list);
+    if (!pick) return { lines: null, note: entry.list.length ? '无中英文字幕' : '无（需登录，或视频没有 AI 字幕）' };
+    const body = await BAS.api.getSubtitleBody(pick.url, { signal });
+    const dur = +info.duration || 0;
+    const last = body.length ? body[body.length - 1].to : 0;
+    const slack = entry.signed ? Math.max(60, 0.25 * dur) : Math.max(30, 0.1 * dur);
+    if (!body.length || (dur > 0 && (last > dur + 5 || last < dur - slack))) return { lines: null, note: `字幕与视频时长不符（${Math.round(last)} / ${Math.round(dur)} 秒），已忽略` };
+    const lines = BAS.detectSubtitles.prepare(body);
+    if (state.video && String(state.video.cid) === cid) state.subtitles = { cid, lines, lan: pick.lan };
+    return { lines, lan: pick.lan, note: '' };
+  }
+
   async function detect(info, { force } = {}) {
     abortDetection();
     const runId = state.runId;
@@ -481,6 +524,7 @@
     state.candidates = []; state.boundaries = []; state.viewPoints = []; state.segments = []; state.dropped = [];
     state.stats = { danmakuCount: 0, viewPoints: 0, cuts: 0, missingSegments: [] };
     state.heat = null; state.heatAnalysis = null;
+    if (state.subtitles && state.subtitles.cid !== String(info.cid)) state.subtitles = null;
     state.av = new Map(); state.avWanted = []; state.avTried = new Set(); state.avErrors = 0; state.avBytes = 0;
     state.cacheable = false; state.cacheTs = 0;
     clearUi();
@@ -553,16 +597,31 @@
       if (!BAS.detectCrowd || s.useCrowd === false || !info.bvid) return { candidates: [] };
       const segs = await BAS.api.getCrowdSegments(info.bvid, { signal: ac.signal });
       return BAS.detectCrowd(segs, { cid: info.cid, duration: info.duration, parts: info.parts });
-    })().catch((e) => { BAS.debug('crowd lookup failed', e && e.message); return { candidates: [], failed: true }; });
+    })().catch((e) => { BAS.log('众包片段库查询失败：' + ((e && e.message) || e)); return { candidates: [], failed: true }; });
     // marks known from the cache survive a failed lookup during the hourly refresh
     const cachedCrowd = () => state.candidates.filter((c) => c.source === 'crowd');
 
-    const [ch, dm, heat, crowd] = await Promise.all([chaptersP, danmakuP, heatP, crowdP]);
+    const subtitleP = (async () => {
+      if (!BAS.detectSubtitles || s.useSubtitles === false) return { candidates: [], note: '关闭' };
+      const got = await loadSubtitles(info, ac.signal);
+      if (!got.lines) return { candidates: [], note: got.note };
+      const r = BAS.detectSubtitles(got.lines, info.duration, s);
+      return { candidates: r.candidates, note: `${got.lan} ${r.lines} 句→${r.candidates.length}` };
+    })().catch((e) => {
+      if (e && e.name === 'AbortError') return { candidates: [], note: '已取消', failed: true };
+      BAS.log('字幕读取失败：' + ((e && e.message) || e));
+      return { candidates: [], note: '读取失败', failed: true };
+    });
+    const cachedSubtitle = () => state.candidates.filter((c) => c.source === 'subtitle');
+
+    const [ch, dm, heat, crowd, sub] = await Promise.all([chaptersP, danmakuP, heatP, crowdP, subtitleP]);
     if (!alive()) { if (!settings().enabled && runId === state.runId) { state.status = 'disabled'; clearUi(); sendBadge(0); } return; }
 
     const crowdCands = crowd.failed ? cachedCrowd() : crowd.candidates;
-    state.candidates = [].concat(ch.candidates, crowdCands, dm.candidates);
+    const subCands = sub.failed ? cachedSubtitle() : sub.candidates;
+    state.candidates = [].concat(ch.candidates, crowdCands, subCands, dm.candidates);
     state.stats.crowd = crowdCands.length;
+    state.stats.subtitle = subCands.length;
     state.boundaries = ch.boundaries; state.viewPoints = ch.viewPoints || [];
     if (heat) { state.heat = heat; state.heatAnalysis = BAS.detectHeat.analyse(heat, info.duration); }
     state.stats.heat = state.heatAnalysis ? { step: state.heatAnalysis.step, usable: state.heatAnalysis.usable, adRuns: state.heatAnalysis.runs.filter((r) => r.adLike).length } : null;
@@ -572,9 +631,16 @@
     else if (ch.error && !s.useDanmaku) { state.status = 'error'; state.error = errMsg(ch.error); }
     else { state.status = 'ready'; state.error = null; }
     applyFusion('detect');
+    logSummary(info, [
+      `章节 ${ch.candidates.length}`,
+      `众包 ${crowd.failed ? '查询失败' : crowdCands.length}`,
+      `字幕 ${sub.note}`,
+      `弹幕 ${dm.count} 条→${dm.candidates.length}`,
+      `热度 ${state.heat ? '有' : '无'}`,
+    ]);
     // Only complete results are cached; failures and partial danmaku are retried on the next visit.
     // a failed crowd lookup is not "no marks": leave it out of the cache so the next visit asks again
-    state.cacheable = !dm.error && !ch.error && !(dm.missing && dm.missing.length) && !(crowd.failed && !crowdCands.length);
+    state.cacheable = !dm.error && !ch.error && !(dm.missing && dm.missing.length) && !(crowd.failed && !crowdCands.length) && !(sub.failed && !subCands.length);
     if (state.cacheable) { state.cacheTs = Date.now(); cacheResults(info); }
   }
 
@@ -589,8 +655,8 @@
     try {
       const ch = BAS.detectChapters ? BAS.detectChapters(state.viewPoints, info.duration, s) : { candidates: [], boundaries: state.boundaries };
       const dm = s.useDanmaku && mem ? BAS.detectDanmaku(mem, info.duration, s) : { candidates: [] };
-      const crowd = state.candidates.filter((c) => c.source === 'crowd');
-      state.candidates = [].concat(ch.candidates || [], crowd, dm.candidates || []);
+      const kept = state.candidates.filter((c) => c.source === 'crowd' || c.source === 'subtitle');
+      state.candidates = [].concat(ch.candidates || [], kept, dm.candidates || []);
       state.boundaries = ch.boundaries || state.boundaries;
       applyFusion('keywords');
       if (state.status === 'ready') { state.cacheTs = Date.now(); cacheResults(info); }
@@ -694,6 +760,10 @@
         const vps = Array.isArray(d.view_points) ? d.view_points.slice(0, 200).filter((x) => x && typeof x === 'object') : [];
         state.bridgePlayerInfo.set(String(d.cid), vps);
         if (state.bridgePlayerInfo.size > 20) state.bridgePlayerInfo.delete(state.bridgePlayerInfo.keys().next().value);
+        const subs = (Array.isArray(d.subtitles) ? d.subtitles.slice(0, 12) : [])
+          .filter((x) => x && typeof x.lan === 'string' && typeof x.url === 'string').map((x) => ({ lan: x.lan.slice(0, 24), url: x.url.slice(0, 800) }));
+        state.bridgeSubs.set(String(d.cid), { list: subs, signed: d.signed === true });
+        if (state.bridgeSubs.size > 20) state.bridgeSubs.delete(state.bridgeSubs.keys().next().value);
       } else if (d.type === 'BAS_HEAT' && isId(d.cid) && d.data && typeof d.data === 'object' && BAS.detectHeat) {
         const parsed = BAS.detectHeat.parse(d.data);
         if (parsed && parsed.values.length <= 2000) {
@@ -809,8 +879,40 @@
   }
 
   // ---------------------------------------------------------------- boot
+  /**
+   * An unpacked extension whose files were updated without pressing reload runs the new files under the OLD manifest:
+   * new modules are never injected and new permissions never granted. Detect that (and a withheld crowd permission)
+   * and say so on screen instead of silently degrading.
+   */
+  async function selfCheck() {
+    if (!chromeOk()) return;
+    let r = null;
+    try { r = await new Promise((res) => { try { chrome.runtime.sendMessage({ type: 'BAS_PING' }, (x) => { void chrome.runtime.lastError; res(x || null); }); } catch (e) { res(null); } }); } catch (e) { r = null; }
+    const problems = [];
+    if (!r || !r.version) problems.push('后台服务没有响应');
+    else if (r.version !== BAS.VERSION) problems.push(`文件已更新到 ${BAS.VERSION}，但 Chrome 还在运行 ${r.version}`);
+    const missing = ['detectCrowd', 'buildSegments', 'detectHeat', 'findAdEnd', 'detectSubtitles'].filter((k) => !BAS[k]);
+    if (missing.length) problems.push('缺少模块 ' + missing.join('、'));
+    if (r && r.crowdPermission === false && settings().useCrowd !== false) problems.push('没有访问 bsbsb.top（众包片段库）的权限');
+    state.selfCheck = problems;
+    if (!problems.length) return;
+    BAS.warn('self-check:', problems.join('; '));
+    const show = () => {
+      if (!BAS.ui || !ensureUi()) return false;
+      BAS.ui.showToast({ html: `<b>恰饭跳过需要重新加载</b><span class="bas-toast-sub">${escapeHtml(problems.join('；'))}。请打开 chrome://extensions，在本扩展上点「重新加载」（刷新图标）。</span>`, durationMs: 20000, force: true });
+      return true;
+    };
+    if (!show()) setTimeout(show, 4000);
+  }
+  /** One line per video in the console: what each source found and what will be skipped. */
+  function logSummary(info, parts) {
+    const segs = state.segments.filter((x) => !x.ignored).map((x) => `${fmtTime(x.start)}–${fmtTime(x.end)} ${(x.sources || [x.source]).join('+')} ${Math.round(x.confidence * 100)}%${x.autoSkip ? ' 自动' : ' 按钮'}`);
+    BAS.log(`${info.bvid}${info.p > 1 ? ' p' + info.p : ''}: ${parts.join(' · ')} → ${segs.length ? segs.join('；') : '无广告片段'}`);
+  }
+
   async function boot() {
     try { await BAS.storage.loadSettings(); } catch (e) { BAS.warn('settings load failed', e); }
+    setTimeout(selfCheck, 1500);
     prevSettingsJson = JSON.stringify(settings());
     try { BAS.storage.onSettingsChanged((s) => { BAS.state.settings = s; onSettingsChanged(s); }); } catch (e) { /* ignore */ }
     try { BAS.storage.onChanged && BAS.storage.onChanged(onStorageChanged); } catch (e) { /* ignore */ }

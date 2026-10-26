@@ -113,5 +113,5 @@ Deno.test('settings: an existing A/V opt-out also turns the skip button media do
   const st = BAS.storage;
   if (!st || !st.sanitizeSettings) return;
   assert(st.sanitizeSettings({ useAvProbe: false }).skipHereMedia === false, 'opt-out carried over');
-  assert(st.sanitizeSettings({}).skipHereMedia === true && st.sanitizeSettings({ useAvProbe: false, skipHereMedia: true }).skipHereMedia === true, 'defaults / explicit choice kept');
+  assert(st.sanitizeSettings({}).skipHereMedia === false && st.sanitizeSettings({ useAvProbe: false, skipHereMedia: true }).skipHereMedia === true, 'defaults / explicit choice kept');
 });

@@ -10,7 +10,7 @@
   const MIN_SEGMENT_SEC = 5;
   const CHAPTER_MERGE_FRACTION = 0.4;   // danmaku overlapping a chapter ad by > 40 % of itself merges into it
   const IGNORE_FRACTION = 0.5;          // override.ignore removes a segment overlapping it by > 50 %
-  const SOURCE_PRIORITY = { user: 0, chapter: 1, crowd: 1.5, danmaku: 2, media: 3, heat: 4 };
+  const SOURCE_PRIORITY = { user: 0, chapter: 1, crowd: 1.5, subtitle: 1.8, danmaku: 2, media: 3, heat: 4 };
 
   const num = (v) => (typeof v === 'number' && isFinite(v) ? v : NaN);
   const round2 = (v) => Math.round(v * 100) / 100;
@@ -46,6 +46,7 @@
     if (source === 'media') return s.useMedia !== false || s.useAudio === true;
     if (source === 'heat') return s.useHeat !== false;
     if (source === 'crowd') return s.useCrowd !== false;
+    if (source === 'subtitle') return s.useSubtitles !== false;
     return true; // 'user' and unknown sources are always kept
   }
 
@@ -173,7 +174,7 @@
     if (chapters.length) {
       const rest = [];
       for (const c of cands) {
-        if (c.source !== 'danmaku') { rest.push(c); continue; }
+        if (c.source !== 'danmaku' && c.source !== 'subtitle') { rest.push(c); continue; }
         let host = null, strong = false;
         for (const ch of chapters) {
           if (c.end === null) {
@@ -187,13 +188,41 @@
         if (!host) { rest.push(c); continue; }
         addSources(host, c.sources);
         if (strong) host.confidence = Math.max(host.confidence, c.offerOnly ? 0 : c.confidence);
-        if (!/弹幕佐证/.test(host.reason)) host.reason = host.reason + ' · 弹幕佐证';
+        const tag = c.source === 'subtitle' ? ' · 字幕佐证' : ' · 弹幕佐证';
+        if (!host.reason.includes(tag)) host.reason = host.reason + tag;
         // agreement of the viewers' danmaku with a crowd mark: once, not per merged estimate
         if (host.source === 'crowd' && strong && !c.offerOnly && !host._corroborated) {
           host._corroborated = true;
           host.confidence = Math.max(host.confidence, Math.min(0.99, host.confidence + 0.05));
         }
-        host.evidence.danmaku = (host.evidence.danmaku || []).concat([{ start: c.start, end: c.end, confidence: c.confidence, reason: c.reason }]);
+        const key = c.source === 'subtitle' ? 'subtitle' : 'danmaku';
+        host.evidence[key] = (Array.isArray(host.evidence[key]) ? host.evidence[key] : []).concat([{ start: c.start, end: c.end, confidence: c.confidence, reason: c.reason }]);
+      }
+      cands = rest;
+    }
+    // A transcript read does the same for danmaku estimates around it: a weak or offer-only estimate never lends the
+    // read's confidence to a longer span; one that is itself confident and agrees (IoU ≥ 0.5) may widen it.
+    const reads = cands.filter((c) => c.source === 'subtitle' && !c.offerOnly);
+    if (reads.length) {
+      const rest = [];
+      for (const c of cands) {
+        if (c.source !== 'danmaku') { rest.push(c); continue; }
+        let host = null;
+        for (const r of reads) {
+          if (c.end === null) { if (c.start >= r.start - BOUNDARY_SNAP_SEC && c.start < r.end) { host = r; break; } continue; }
+          if (overlap(c.start, c.end, r.start, r.end) > 0) { host = r; break; }
+        }
+        if (!host) { rest.push(c); continue; }
+        addSources(host, c.sources);
+        const confident = !c.offerOnly && c.confidence >= minConfFuse && c.end !== null;
+        const o = c.end === null ? 0 : overlap(c.start, c.end, host.start, host.end);
+        const iou = o / Math.max(1e-9, (host.end - host.start) + (c.end - c.start) - o);
+        if (confident && iou >= 0.5) {
+          host.start = Math.min(host.start, c.start); host.end = Math.max(host.end, c.end);
+          host.confidence = Math.min(0.97, Math.max(host.confidence, c.confidence) + 0.05);
+        }
+        if (!host.reason.includes(' · 弹幕佐证')) host.reason = host.reason + ' · 弹幕佐证';
+        host.evidence.danmaku = (Array.isArray(host.evidence.danmaku) ? host.evidence.danmaku : []).concat([{ start: c.start, end: c.end, confidence: c.confidence, reason: c.reason }]);
       }
       cands = rest;
     }

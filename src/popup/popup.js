@@ -14,8 +14,9 @@
     useAudio: false,
     useHeat: true,
     useCrowd: true,
+    useSubtitles: true,
     useAvProbe: true,
-    skipHereMedia: true,
+    skipHereMedia: false,
     skipHereButton: true,
     showMarkers: true,
     showToast: true,
@@ -30,7 +31,7 @@
   const REFRESH_MS = 1500;
   const REPLY_TIMEOUT_MS = 2500;
   const VIDEO_URL_RE = /^https:\/\/www\.bilibili\.com\/(video|list|festival)\//;
-  const SOURCE_LABEL = { chapter: '章节', crowd: '众包', danmaku: '弹幕', user: '手动', media: '音视频', heat: '热度' };
+  const SOURCE_LABEL = { chapter: '章节', crowd: '众包', subtitle: '字幕', danmaku: '弹幕', user: '手动', media: '音视频', heat: '热度' };
   const MARKS_KEY = 'popupMarks';
 
   // ---------- pure helpers ----------

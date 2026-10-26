@@ -2,7 +2,7 @@
 
 const DEFAULT_SETTINGS = {
   enabled: true, mode: 'auto', minConfidence: 0.6,
-  useChapters: true, useDanmaku: true, useMedia: true, useAudio: false, useHeat: true, useCrowd: true, useAvProbe: true, skipHereMedia: true, skipHereButton: true,
+  useChapters: true, useDanmaku: true, useMedia: true, useAudio: false, useHeat: true, useCrowd: true, useSubtitles: true, useAvProbe: true, skipHereMedia: false, skipHereButton: true,
   showMarkers: true, showToast: true, toastDurationMs: 6000, landingOffsetSec: 0,
   extraStartKeywords: [], extraEndKeywords: [], ignoreUps: [], debug: false,
 };
@@ -58,6 +58,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return true; // async
+  }
+
+  if (msg.type === 'BAS_PING') {
+    // the content script checks that the running manifest matches its files (an unpacked extension that was updated
+    // but not reloaded runs new files under the old manifest) and that the crowd lookup is allowed
+    (async () => {
+      let crowd = null;
+      try { crowd = await chrome.permissions.contains({ origins: ['https://bsbsb.top/*'] }); } catch (e) { crowd = null; }
+      sendResponse({ ok: true, version: chrome.runtime.getManifest().version, crowdPermission: crowd });
+    })();
+    return true;
   }
 
   if (msg.type === 'BAS_BADGE') {

@@ -8,12 +8,13 @@ analytics. The one third-party request, the optional crowd-mark lookup, is descr
 
 ## How it detects an ad
 
-Six independent signals are fused into time segments with a confidence score:
+Seven independent signals are fused into time segments with a confidence score:
 
 | Signal | What it uses | Confidence |
 |---|---|---|
 | **Chapters (章节 / 视频看点)** | Uploader chapters from the player API whose title says 广告 / 恰饭 / 赞助 / 推广 / 商单 … | 0.95 |
 | **Crowd marks (小电视空降助手)** | Segments that viewers of [BilibiliSponsorBlock](https://github.com/hanydd/BilibiliSponsorBlock) marked by hand and voted on (downvoted ones are hidden). Where a video has one it is the most precise signal (edges within ~1 s); a disputed mark is only offered. | 0.9 – 0.98 |
+| **AI subtitles (AI 字幕)** | What the uploader says, from the AI subtitle file the player itself lists for signed-in viewers. A sponsor read ends in calls to action that ordinary talk almost never contains (链接 / 置顶 / 领券 / 下单 / 保价 / 运费险 …); the read is grown around them over lines that repeat the product's name (a term said there and nowhere else in the video), and starts at an announcement such as 本期的推广位. Edges land on sentence boundaries. Two different calls to action auto-skip; one is only offered. A video that sells from start to end (好物推荐) is only offered. | 0.55 – 0.9 |
 | **Danmaku (弹幕)** | All danmaku of the video (same protobuf API the player uses). Clusters of *ad announcements* (恰饭了, 广告来了, 零帧起手, 感谢金主…), *jump cues* (空降 6:00, 跳伞04:50, 745工程, 坐标609, 向右20下 …) and *landing thanks* (欢迎回来, 空降成功, 感谢609工程 …). The median of agreeing jump targets gives the end; thanks clusters confirm it. | 0.2 – 1.0 |
 | **Viewer heat (高能进度条)** | The player's own viewer-activity curve (about 100 samples per video, served without login). When many viewers drag past an ad, the curve ramps up across it, peaks at its end and falls off a cliff. A danmaku segment that matches gets +0.2 confidence, which lets thin danmaku (e.g. signed out) still auto-skip. On popular videos it also blocks auto-skips that have no 空降 coordinates when the curve shows no skipping. Alone, it only offers a manual skip button. | confirmation |
 | **Audio / video look-ahead** | For a likely ad the danmaku cannot confirm on their own (they name an ad but are too few), *before you reach it*, the extension downloads just that stretch (plus 45 s around it) of the video's own lowest-bitrate audio track and its 360p picture, using the byte index every bilibili stream carries (about 4–12 MB per segment, at most 60 MB per video), decodes it in the page (`decodeAudioData`, WebCodecs) and compares the inside with the surroundings. Many sponsored reads are **louder**, **steadier** (narration over music, no pauses) and **brighter** than the video around them. When a segment clearly is, and its danmaku name an ad (恰饭 / 广告 … or landing thanks), it gets +0.25 confidence. That lifts thin-danmaku ads to auto-skip. It also finds the end for danmaku that only announce an ad's start. It never blocks a segment: on crowd-labelled ads a third of the real ones looked no different from their surroundings. | confirmation, open-ended ends |
@@ -35,6 +36,10 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
 
 * Detection talks to bilibili's own servers (`api.bilibili.com`, `bvc.bilivideo.com` and the video CDN the player itself
   streams from), making the same kind of requests the bilibili player makes. There is no analytics.
+* **AI subtitles (on by default; turn off with AI 字幕分析).** The list of subtitle files is read from the player's own
+  `x/player/wbi/v2` response, so no extra API call is made. The chosen file (Chinese first, then English) is downloaded
+  once per video from bilibili's subtitle CDN (`aisubtitle.hdslb.com`), without cookies, exactly as the player does when
+  subtitles are turned on. The text is analysed in memory; only the resulting segments go into the result cache.
 * **Crowd marks (one third-party request, on by default; turn off with 众包片段库 in the options).** For each video whose
   results are not cached, the background worker asks `bsbsb.top` (BilibiliSponsorBlock, served through Cloudflare):
   - **Sent:** only the first 4 hex digits of `sha256(BV id)`. The server answers with every marked video in that
@@ -49,14 +54,16 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
   button's media check (about 5 MB per press) is a separate setting.
 * Settings sync through `chrome.storage.sync`. Per-video ignores and a 12-hour result cache stay in `chrome.storage.local`.
 * Host permissions are limited to `www.bilibili.com`, `api.bilibili.com`, `bvc.bilivideo.com` and `bsbsb.top` (the
-  crowd lookup). The video CDN answers the page's own range requests, so it needs no extra permission.
+  crowd lookup). The video and subtitle CDNs answer the page's own requests, so they need no extra permission.
 
 ## Install (unpacked)
 
 1. Open `chrome://extensions`, enable **Developer mode** (top right).
 2. Click **Load unpacked** and choose this folder (`bilibili-ad-skipper`).
 3. Open any bilibili video. Detected segments appear as coloured markers on the progress bar
-   (orange = chapter, pink = danmaku, green = your own, striped = low confidence, dashed = offer only).
+   (orange = chapter, purple = crowd mark, teal = AI subtitles, pink = danmaku, green = your own, striped = low confidence, dashed = offer only).
+4. After updating the files (e.g. `git pull`), press the extension's **reload** icon on `chrome://extensions`. Until you do,
+   Chrome keeps running the old version; the extension notices the mismatch and says so in a toast on the video page.
 
 ## Using it
 
@@ -65,13 +72,13 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
   (dimmed) and in the popup with a **恢复** button.
 * **Manual mode**: a **跳过广告 ▶** button appears instead; click it to skip.
 * **Missed an ad?** Click the **⏭** button in the player's control bar (or 跳过正在播放的广告 in the popup) while the ad
-  plays. It first analyses the next few minutes of the video's own audio and picture (a few seconds, toast
-  `正在分析音视频…`) and jumps to the first transition that looks like the ad's end. Without that it uses everything
-  around that moment, even evidence too weak to auto-skip on: segments shown but not skipped, 空降 coordinates posted
-  near now, landing danmaku (欢迎回来 / 空降成功), the heat curve, the next chapter; if nothing is found it moves
-  forward 30 s. The toast offers **撤销** and **记住** (save it as an ad for this video, so it is skipped automatically
-  next time). On the measured ads, a press at any second inside the ad lands 2.1 s early … 0.2 s late. If the analysis
-  shows the ad already ended while it ran, nothing is skipped; if you seek meanwhile, the press is cancelled.
+  plays. It jumps at once, using everything known around that moment, even evidence too weak to auto-skip on, in this
+  order: a segment shown but not skipped; 空降 coordinates posted near now; landing danmaku (欢迎回来 / 空降成功); the
+  sponsor read in the AI subtitles; the heat curve; a single coordinate; a chapter boundary at most 20 s ahead. If
+  nothing is found it moves forward 15 s and offers **再前进**. Otherwise the toast offers **撤销** and **记住** (save it
+  as an ad for this video, so it is skipped automatically next time). When the results came from the cache it may wait
+  up to 2.5 s for the danmaku / subtitles. An optional media check (off by default, a few seconds and about 5 MB per
+  press) measures the end from the video's own audio and picture instead.
 * If you seek into a skipped segment yourself, it is not skipped again until you leave it.
 * **Popup** (toolbar icon): on/off, mode, the list of segments (跳到此处 / 忽略), low-confidence candidates, manual marking
   (标记广告开始 / 结束), 重新检测, 清除本视频覆盖.
@@ -89,7 +96,8 @@ src/content/00-ns.js          BAS namespace, utils (time parsing incl. 空降 fo
 src/content/10-storage.js     settings / overrides / cache
 src/content/20-protobuf.js    danmaku protobuf decoder
 src/content/21-wbi.js         WBI signing (md5) for the signed API variants
-src/content/22-api.js         view / player info / danmaku fetch (direct, with background fallback)
+src/content/22-api.js         view / player info / danmaku / subtitle fetch (direct, with background fallback)
+src/content/28-detect-subtitles.js  sponsor reads in the AI subtitles (calls to action + product name), skip-button reads
 src/content/30-detect-chapters.js
 src/content/31-detect-danmaku.js
 src/content/32-media.js       frame/audio transition analyzer
@@ -168,6 +176,24 @@ and three opening skips):
 | Live check on bilibili (v0.4.1, 2026-10-17) | measured ads auto-skipped (ends from the danmaku, e.g. 1.2 s late on BV1jCJs6UE9S); the thin-danmaku ad gets its end from the media; an intro the media calls ad-like stays a button |
 | Cost per suspected segment | 4–12 MB (audio ≈ 66 kbps + 360p video 125–400 kbps depending on the codec), 4–10 s in the background; at most 60 MB per video |
 
+### AI subtitles (2026-10-26)
+
+Transcripts of 100 crowd-labelled videos were read signed in; 76 had a matching AI subtitle file (32 000 lines). These
+are the videos the vocabulary and rules were developed on, so the numbers are optimistic; checking them on videos the
+rules have not seen is the next step.
+
+| on the 94 of those videos with collected danmaku, crowd marks off | without subtitles | with subtitles |
+|---|---|---|
+| Labelled ads auto-skipped (IoU ≥ 0.4) | 22 / 101 (22 %) | **43 / 101 (43 %)** |
+| Labelled ads at least offered | 38 % | 54 % |
+| Auto-skips on content nobody labelled | 0 / 22 | 0 / 50 |
+| Auto-skips ending > 3 s past the label | 0 | 3 (3 – 11 s) |
+
+The subtitle detector alone covers 46 % of the labelled ad time and wrongly covers 33 s of content in 76 videos (one
+coupon joke, shown as an offer, not skipped). Its starts are a median 2.7 s after the label (the segue line plays), its
+ends 2.1 s before it. Skip-button presses at ¼, ½ and ¾ of each labelled ad (252 presses) land within 3 s of the
+labelled end 65 % of the time (61 % without subtitles); with a 空降 consensus 92 %, with only a blind step 21 %.
+
 ### Crowd marks + detectors on today's popular videos (2026-10-17)
 
 583 videos from bilibili's 热门 and 每周必看 lists (median 1.5 days old; danmaku fetched signed out, median 292 per
@@ -215,6 +241,9 @@ ends worse as better against the crowd. To rerun the test: `tools/bsb-prepare.py
 
 * Danmaku-based detection needs viewers to have reacted; very new or unpopular videos may have no usable danmaku.
   Logged-in users receive far more danmaku than anonymous ones.
+* AI subtitles are listed only for signed-in viewers, and only about three in four videos have them. A read without a
+  call to action (only the product praised, "感兴趣可以去看看") is not found from the subtitles. A product mentioned in
+  the content (a review, a sale guide) can look like a read with one call to action; that is why one is only offered.
 * Boundaries come from crowd timing: a skip typically starts ~3 s after the crowd-labelled start (the segue into the
   ad plays) and ends within a couple of seconds of the labelled end.
 * The audio/video check only confirms: about a quarter of real ads are clearly louder, steadier and brighter than their
