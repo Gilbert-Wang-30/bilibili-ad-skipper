@@ -13,33 +13,6 @@
       <span class="saved" id="saved" aria-live="polite">已保存</span>
     </header>
 
-    <section class="card ai" id="aiCard">
-      <h2>AI 字幕分析（推荐：最准确的检测方式）</h2>
-      <p class="help">用一个语言模型读视频的 AI 字幕，找出口播广告的起止句。在 167 个有众包标记的视频上，它找到了约 96% 的标记广告，边界误差中位数约 0.1 秒；不设置时只能靠弹幕、热度和关键词，大约能找到一半。需要你自己的 API 密钥：每个视频一次请求，模型拿不准的片段最多再追问 3 次（结果缓存 60 天）。默认模型 Claude Opus 5.5 每个视频约 0.04 美元；Claude Haiku 5.5 在测试集上同样准确，约 0.001 美元（在「模型」里填 claude-haiku-5-5）。</p>
-      <div class="row">
-        <span class="lbl">模型服务<small id="aiProviderHint"></small></span>
-        <select id="aiProvider"></select>
-      </div>
-      <div class="row">
-        <span class="lbl">API 密钥<small id="aiKeyHint">只保存在本机扩展自己的数据库里（网页和内容脚本读不到），不同步、不导出；只由扩展后台发给你选的模型服务。为防止意外扣费，每小时最多 60 次、每天最多 400 次请求。</small></span>
-        <input type="password" id="aiKey" class="wide-input" autocomplete="off" spellcheck="false">
-      </div>
-      <div class="row">
-        <span class="lbl">模型<small>留空用该服务的默认模型（见上方说明）。</small></span>
-        <input type="text" id="aiModel" class="wide-input" autocomplete="off" spellcheck="false">
-      </div>
-      <div class="row" id="aiBaseRow">
-        <span class="lbl">接口地址<small>OpenAI 兼容接口的根地址（…/v1）。本机 Ollama：http://localhost:11434/v1，需先设置环境变量 OLLAMA_ORIGINS=chrome-extension://* 和 OLLAMA_CONTEXT_LENGTH=32768（字幕较长）再重启 Ollama；本地小模型的准确率明显低于在线模型。</small></span>
-        <input type="text" id="aiBaseUrl" class="wide-input" autocomplete="off" spellcheck="false">
-      </div>
-      <div class="btn-row">
-        <button type="button" class="btn primary" id="aiSave">保存并测试</button>
-        <button type="button" class="btn danger" id="aiClear">删除 AI 设置</button>
-      </div>
-      <p class="help" id="aiStatus" aria-live="polite"></p>
-      <p class="help">隐私：开启后，你看的每个视频的标题和 AI 字幕全文会发送给你选的模型服务（按该服务自己的隐私政策处理），对方因此知道你看了哪些视频；不发送账号、Cookie 或观看记录以外的任何数据。只在有 AI 字幕的视频上运行。</p>
-    </section>
-
     <form id="form" autocomplete="off">
       <section class="card">
         <h2>基本</h2>
@@ -80,11 +53,7 @@
         </label>
         <label class="row">
           <input type="checkbox" name="useSubtitles">
-          <span class="lbl">字幕关键词分析<small>没有设置 AI 模型时的本地替代：在 AI 字幕里找「链接放评论区置顶」「领券下单」「保价、运费险」这类购买引导和只在这段反复出现的产品名。设置了 AI 模型后由 AI 的结果代替。字幕列表优先取自播放器自己的请求，未登录时向 B 站请求一次；字幕文件从 B 站字幕服务器下载一次，只在本机分析。</small></span>
-        </label>
-        <label class="row">
-          <input type="checkbox" name="useLlm">
-          <span class="lbl">使用 AI 字幕分析<small>在上方设置好模型后生效。关闭则暂停使用（设置保留）。</small></span>
+          <span class="lbl">字幕口播识别<small>读视频的中文字幕（UP 主说的话：优先用 B 站生成的 AI 字幕，没有时用 UP 主上传的中文字幕），逐句打分：每个词组在众包标记的广告里比在正片里常见多少（从几千个已标记视频统计出的权重表，随扩展一起安装），再加上语速、停顿、只在这一段反复出现的产品名，连成一段段口播，按句子边界定出起止。不用 AI，不联网分析，全部在本机完成。字幕地址取自播放器自己请求到的视频信息，播放器没有列出字幕时（未登录时通常如此）从 B 站弹幕接口取，字幕文件（中文）从 B 站字幕服务器下载一次。很有把握的自动跳过，把握不大的只显示跳过按钮。</small></span>
         </label>
         <label class="row">
           <input type="checkbox" name="useAvProbe">
@@ -104,15 +73,15 @@
         <h2>显示与跳转</h2>
         <label class="row">
           <input type="checkbox" name="skipHereMedia">
-          <span class="lbl">「跳过广告」按钮分析音视频<small>点按钮时下载之后几分钟的低码率音轨和画面（约 5 MB），找到广告结束处的转场（静音 + 切镜），通常误差 2 秒以内。关闭则只用弹幕和热度估计。</small></span>
+          <span class="lbl">「跳过广告」按钮分析音视频<small>点按钮时下载之后几分钟的低码率音轨和画面（约 5 MB），找到广告结束处的转场（静音 + 切镜），通常误差 2 秒以内。关闭则用已识别的片段、弹幕、字幕口播、热度和章节估计。</small></span>
         </label>
         <label class="row">
           <input type="checkbox" name="skipHereButton">
-          <span class="lbl">控制栏显示「跳过广告」按钮<small>广告正在播放却没被识别时，点它即可跳到广告结尾（依据附近的空降弹幕、落地弹幕、热度曲线或章节）；可撤销，也可「记住」以后自动跳过。</small></span>
+          <span class="lbl">控制栏显示「跳过广告」按钮<small>广告正在播放却没被识别时，点它即可跳到广告结尾（依据已识别的片段、附近的空降弹幕、字幕里的口播、落地弹幕、热度曲线或章节）；可撤销，也可「记住」以后自动跳过。</small></span>
         </label>
         <label class="row">
           <input type="checkbox" name="showMarkers">
-          <span class="lbl">在进度条上显示广告标记<small>橙色 = 章节，粉色 = 弹幕，绿色 = 手动添加。</small></span>
+          <span class="lbl">在进度条上显示广告标记<small>橙色 = 章节，紫色 = 众包标记，青色 = 字幕口播，粉色 = 弹幕，绿色 = 手动添加。</small></span>
         </label>
         <label class="row">
           <input type="checkbox" name="showToast">
@@ -166,16 +135,15 @@
         <input type="file" id="importFile" accept="application/json,.json" hidden>
         <button type="button" class="btn danger" id="clearCacheBtn">清除缓存与覆盖</button>
       </div>
-      <p class="help">「清除缓存与覆盖」会删除所有视频的检测结果缓存（包括 AI 分析结果，之后会重新请求模型），以及你在各个视频上做的「忽略 / 手动添加」记录；设置本身不受影响。</p>
+      <p class="help">「清除缓存与覆盖」会删除所有视频的检测结果缓存，以及你在各个视频上做的「忽略 / 手动添加」记录；设置本身不受影响。</p>
       <p class="help" id="storageInfo"></p>
     </section>
 
     <footer class="foot">
-      除 AI 字幕分析（发送给你自己选的模型服务）和众包片段库查询外，所有分析均在本地完成。
+      所有分析均在本地完成，不会上传任何数据。
     </footer>
   </div>
   <div class="toast" id="toast" hidden></div>
-  <script src="../llm-providers.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

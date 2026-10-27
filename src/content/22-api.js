@@ -388,14 +388,16 @@
     const list = json.data && json.data.subtitle && Array.isArray(json.data.subtitle.subtitles) ? json.data.subtitle.subtitles : [];
     return list.slice(0, 12).map((x) => ({ lan: String((x && x.lan) || '').slice(0, 24), url: String((x && x.subtitle_url) || '').slice(0, 800) })).filter((x) => x.url);
   }
-  /** Chinese first (uploader's own track before the AI one), then English. */
+  /**
+   * The AI Chinese track first (what the subtitle detector's weights were counted from: same sentence timing), then the
+   * uploader's own Chinese one. Other languages are not scored, so they are not downloaded.
+   */
   function pickSubtitle(list) {
     const ok = (Array.isArray(list) ? list : []).filter((x) => x && typeof x.url === 'string' && typeof x.lan === 'string');
     const rank = (lan) => {
       const l = lan.toLowerCase();
-      if (/^zh/.test(l)) return 0;
-      if (/^ai-zh/.test(l)) return 1;
-      if (/^(ai-)?en/.test(l)) return 2;
+      if (/^ai-zh/.test(l)) return 0;
+      if (/^zh/.test(l)) return 1;
       return 9;
     };
     const best = ok.filter((x) => rank(x.lan) < 9).sort((a, b) => rank(a.lan) - rank(b.lan))[0];

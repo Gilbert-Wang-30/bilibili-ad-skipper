@@ -10,7 +10,7 @@
   const MIN_SEGMENT_SEC = 5;
   const CHAPTER_MERGE_FRACTION = 0.4;   // danmaku overlapping a chapter ad by > 40 % of itself merges into it
   const IGNORE_FRACTION = 0.5;          // override.ignore removes a segment overlapping it by > 50 %
-  const SOURCE_PRIORITY = { user: 0, chapter: 1, crowd: 1.5, llm: 1.6, subtitle: 1.8, danmaku: 2, media: 3, heat: 4 };
+  const SOURCE_PRIORITY = { user: 0, chapter: 1, crowd: 1.5, subtitle: 1.8, danmaku: 2, media: 3, heat: 4 };
 
   const num = (v) => (typeof v === 'number' && isFinite(v) ? v : NaN);
   const round2 = (v) => Math.round(v * 100) / 100;
@@ -47,7 +47,6 @@
     if (source === 'heat') return s.useHeat !== false;
     if (source === 'crowd') return s.useCrowd !== false;
     if (source === 'subtitle') return s.useSubtitles !== false;
-    if (source === 'llm') return s.useLlm !== false;
     return true; // 'user' and unknown sources are always kept
   }
 
@@ -114,9 +113,6 @@
     if (bothOffer) out.confidence = Math.max(a.confidence, b.confidence);
     else out.confidence = Math.max(a.offerOnly ? 0 : a.confidence, b.offerOnly ? 0 : b.confidence);
     out.offerOnly = bothOffer;
-    // an offered model read never widens a skip (it can be minutes long): the merged range is the skipping side's
-    const offer = a.offerOnly && !b.offerOnly ? a : b.offerOnly && !a.offerOnly ? b : null;
-    if (offer && offer.source === 'llm') { const keep = offer === a ? b : a; out.start = keep.start; out.end = keep.end; }
     out.sources = primary.sources.slice();
     addSources(out, other.sources);
     out.evidence = Object.assign({}, primary.evidence);
@@ -174,7 +170,7 @@
     // also absorbs any weak or offer-only estimate that merely touches it, so the union in step 5 cannot stretch a
     // precise mark over minutes of content the estimate alone would never have skipped.
     const minConfFuse = isFinite(settings.minConfidence) ? settings.minConfidence : BAS.DEFAULT_SETTINGS.minConfidence;
-    const chapters = cands.filter((c) => c.source === 'chapter' || c.source === 'crowd' || (c.source === 'llm' && !c.offerOnly));
+    const chapters = cands.filter((c) => c.source === 'chapter' || c.source === 'crowd');
     if (chapters.length) {
       const rest = [];
       for (const c of cands) {

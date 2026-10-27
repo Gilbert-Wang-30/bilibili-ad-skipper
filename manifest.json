@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Bilibili Ad Skipper (恰饭跳过)",
-  "version": "1.0.0",
-  "description": "自动检测并跳过 B 站视频中的植入广告（恰饭）。基于 UP 主章节、众包标记（小电视空降助手）、AI 字幕里的口播、弹幕（空降/感谢）、播放热度和音视频核验。",
+  "version": "2.0.0",
+  "description": "自动检测并跳过 B 站视频中的植入广告（恰饭）。基于 UP 主章节、众包标记（小电视空降助手）、字幕里的口播（本地统计，不用 AI）、弹幕（空降/感谢）、播放热度和音视频核验。",
   "minimum_chrome_version": "111",
   "permissions": [
     "storage"
@@ -12,17 +12,6 @@
     "https://www.bilibili.com/*",
     "https://bvc.bilivideo.com/*",
     "https://bsbsb.top/*"
-  ],
-  "optional_host_permissions": [
-    "https://api.anthropic.com/*",
-    "https://api.deepseek.com/*",
-    "https://dashscope.aliyuncs.com/*",
-    "https://open.bigmodel.cn/*",
-    "https://api.openai.com/*",
-    "https://generativelanguage.googleapis.com/*",
-    "https://*/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "src/background.js"
@@ -74,8 +63,8 @@
         "src/content/20-protobuf.js",
         "src/content/21-wbi.js",
         "src/content/22-api.js",
+        "src/content/27-subtitle-model.js",
         "src/content/28-detect-subtitles.js",
-        "src/content/29-detect-llm.js",
         "src/content/30-detect-chapters.js",
         "src/content/31-detect-danmaku.js",
         "src/content/32-media.js",

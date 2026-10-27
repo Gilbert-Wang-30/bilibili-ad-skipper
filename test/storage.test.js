@@ -171,8 +171,10 @@ Deno.test('storage.cache: TTL, version check and LRU prune', () =>
     await S.setCache(1, { segments: [], candidates: [] });
     await tick(100);   // the opportunistic prune is fire-and-forget and takes a few storage round-trips
     assert(!fake.storage.local._data.has('c:stale'));
-    assertEquals(await S.clearCache(), 300);   // c:1 was overwritten, not added
-    assertEquals([...fake.storage.local._data.keys()].filter((k) => k.startsWith('c:')).length, 0);
+    fake.storage.local._data.set('a:7', { reads: [] });   // v1.0.0's AI answers go with the cache
+    assertEquals(await S.clearCache(), 301);   // c:1 was overwritten, not added
+    assertEquals([...fake.storage.local._data.keys()].filter((k) => k.startsWith('c:') || k.startsWith('a:')).length, 0);
+    assert(fake.storage.local._data.has('v:BV:1'));
   }));
 
 Deno.test('storage.wbiKeys: 6 h TTL', () =>

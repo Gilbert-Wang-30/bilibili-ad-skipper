@@ -15,7 +15,6 @@
     useHeat: true,
     useCrowd: true,
     useSubtitles: true,
-    useLlm: true,
     useAvProbe: true,
     skipHereMedia: false,
     skipHereButton: true,
@@ -109,7 +108,6 @@
       useHeat: toBool(src.useHeat, d.useHeat),
       useCrowd: toBool(src.useCrowd, d.useCrowd),
       useSubtitles: toBool(src.useSubtitles, d.useSubtitles),
-      useLlm: toBool(src.useLlm, d.useLlm),
       useAvProbe: toBool(src.useAvProbe, d.useAvProbe),
       skipHereMedia: toBool(src.skipHereMedia, d.skipHereMedia),
       skipHereButton: toBool(src.skipHereButton, d.skipHereButton),
@@ -238,9 +236,9 @@
   async function updateStorageInfo() {
     try {
       const all = await chrome.storage.local.get(null);
-      let c = 0, v = 0, a = 0;
-      for (const k of Object.keys(all || {})) { if (k.startsWith('c:')) c++; else if (k.startsWith('v:')) v++; else if (k.startsWith('a:')) a++; }
-      $('storageInfo').textContent = `当前缓存：${c} 个视频的检测结果，${a} 个视频的 AI 分析结果，${v} 个视频的覆盖记录。`;
+      let c = 0, v = 0;
+      for (const k of Object.keys(all || {})) { if (k.startsWith('c:')) c++; else if (k.startsWith('v:')) v++; }
+      $('storageInfo').textContent = `当前缓存：${c} 个视频的检测结果，${v} 个视频的覆盖记录。`;
     } catch (e) { $('storageInfo').textContent = ''; }
   }
 
@@ -348,110 +346,6 @@
     window.addEventListener('unload', () => { clearTimeout(debounceTimer); clearTimeout(savedTimer); clearTimeout(toastTimer); });
   }
 
-  // ---------- AI transcript check (model provider + key; chrome.storage.local, never synced or exported) ----------
-  const LLM = window.BAS_LLM_PROVIDERS;
-  const LLM_KEY = 'llmConfig';
-  let llmStored = null;
-  function setAiStatus(text, kind) {
-    const el = $('aiStatus');
-    el.textContent = text;
-    el.className = 'help' + (kind === 'ok' ? ' ok-text' : kind === 'err' ? ' err-text' : '');
-  }
-  function aiProviderChanged() {
-    const id = $('aiProvider').value, p = LLM.PROVIDERS[id] || {};
-    const mine = llmStored && llmStored.provider === id;
-    // the stored model / address belong to the stored provider only
-    $('aiModel').value = mine && llmStored.model && llmStored.model !== p.model ? llmStored.model : '';
-    $('aiBaseUrl').value = mine && id === 'custom' ? (llmStored.baseUrl || '') : '';
-    $('aiModel').placeholder = p.model || '模型名，如 qwen2.5:7b';
-    $('aiBaseRow').hidden = id !== 'custom';
-    $('aiKey').placeholder = mine && llmStored.keyHint ? `已保存（…${llmStored.keyHint}），留空则不修改` : (p.keyHint || '');
-    const hint = $('aiProviderHint');
-    hint.textContent = (p.tested ? `已在本项目的测试集上测过。默认 ${p.model}（每个视频约 0.04 美元）；${p.altModel} 在测试集上同样准确，每个视频约 0.001 美元，可在「模型」里填写。` : '与推荐模型用同一提示词，准确率未在本项目测试。') + (p.keyUrl ? ' 获取密钥：' : '');
-    if (p.keyUrl) { const a = document.createElement('a'); a.href = p.keyUrl; a.target = '_blank'; a.rel = 'noopener'; a.textContent = new URL(p.keyUrl).host; hint.appendChild(a); }
-  }
-  async function loadAi() {
-    if (!LLM) { $('aiCard').hidden = true; return; }
-    const sel = $('aiProvider');
-    for (const [id, p] of Object.entries(LLM.PROVIDERS)) { const o = document.createElement('option'); o.value = id; o.textContent = p.label + (p.tested ? '（推荐）' : ''); sel.appendChild(o); }
-    try { llmStored = (await chrome.storage.local.get(LLM_KEY))[LLM_KEY] || null; } catch (e) { llmStored = null; }
-    sel.value = llmStored && LLM.PROVIDERS[llmStored.provider] ? llmStored.provider : 'anthropic';
-    aiProviderChanged();
-    let key = '';
-    try { key = (await LLM.getSecret('apiKey')) || ''; } catch (e) { key = ''; }
-    const cfg = LLM.normalizeConfig(llmStored && Object.assign({}, llmStored, { apiKey: key }));
-    let permitted = false;
-    if (cfg) { try { permitted = await chrome.permissions.contains({ origins: [LLM.originPattern(cfg)] }); } catch (e) { permitted = false; } }
-    if (cfg && permitted) setAiStatus(`已设置：${cfg.label} · ${cfg.model}`, 'ok');
-    else if (cfg) setAiStatus(`已设置 ${cfg.label}，但扩展没有访问 ${cfg.origin} 的权限：请点「保存并测试」重新授权。`, 'err');
-    else setAiStatus('未设置。');
-  }
-  /** Small transcript with one obvious read: proves key, permission, model and reply format end to end. */
-  const TEST_LINES = ['今天我们来聊聊黑洞是怎么形成的', '恒星燃料耗尽之后会发生坍缩', '说到熬夜看视频', '最近我一直在用小象家的护眼台灯', '评论区置顶链接就能领券下单', '好了我们回到正题', '坍缩到一定程度就形成了黑洞'];
-  /** Origins of model services this extension holds an optional permission for (the required hosts excluded). */
-  async function grantedLlmOrigins() {
-    const required = new Set((chrome.runtime.getManifest().host_permissions || []));
-    try { return ((await chrome.permissions.getAll()).origins || []).filter((o) => !required.has(o)); } catch (e) { return []; }
-  }
-  async function saveAi() {
-    const provider = $('aiProvider').value;
-    const p = LLM.PROVIDERS[provider];
-    const typedKey = $('aiKey').value.trim();
-    const raw = { provider, model: $('aiModel').value.trim() || p.model, baseUrl: provider === 'custom' ? $('aiBaseUrl').value.trim() : p.baseUrl };
-    // a saved key is kept only for the same provider at the same address: it never follows a changed base URL
-    let storedKey = '';
-    try { storedKey = (await LLM.getSecret('apiKey')) || ''; } catch (e) { storedKey = ''; }
-    const prev = llmStored ? LLM.normalizeConfig(Object.assign({}, llmStored, { apiKey: storedKey || 'x' })) : null;
-    const probe = LLM.normalizeConfig(Object.assign({}, raw, { apiKey: 'x' }));
-    const keepKey = !typedKey && prev && probe && prev.provider === provider && prev.origin === probe.origin ? storedKey : '';
-    raw.apiKey = typedKey || keepKey || '';
-    const cfg = LLM.normalizeConfig(raw);
-    if (!cfg) { setAiStatus(!raw.apiKey && !p.keyOptional ? '请填写 API 密钥。' : !raw.model ? '请填写模型名。' : '接口地址无效（只接受 https，或本机的 http://localhost）。', 'err'); return; }
-    // the permission prompt needs the click's user gesture: ask before anything else is awaited
-    let granted = false;
-    try { granted = await chrome.permissions.request({ origins: [LLM.originPattern(cfg)] }); } catch (e) { granted = false; }
-    if (!granted) { setAiStatus('需要允许扩展访问 ' + cfg.origin + ' 才能调用模型。', 'err'); return; }
-    if (raw.apiKey) await LLM.setSecret('apiKey', raw.apiKey); else await LLM.deleteSecret('apiKey');
-    const stored = { provider: raw.provider, model: raw.model, baseUrl: raw.baseUrl, keyHint: raw.apiKey ? raw.apiKey.slice(-4) : '', rev: Date.now() };
-    await chrome.storage.local.set({ [LLM_KEY]: stored });
-    llmStored = stored;
-    // access to a service no longer used is given back
-    for (const o of await grantedLlmOrigins()) if (o !== LLM.originPattern(cfg)) { try { await chrome.permissions.remove({ origins: [o] }); } catch (e) { /* ignore */ } }
-    $('aiKey').value = '';
-    aiProviderChanged();
-    setAiStatus('已保存，正在测试…');
-    const ok = await testAi();
-    if (ok) setAiStatus(`已设置并测试通过：${cfg.label} · ${cfg.model}（${ok}）`, 'ok');
-  }
-  async function testAi() {
-    try {
-      if (!window.BAS) window.BAS = {};
-      if (!window.BAS.detectLlm) await new Promise((res, rej) => { const s = document.createElement('script'); s.src = '../content/29-detect-llm.js'; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
-      const L = window.BAS.detectLlm;
-      // a realistic video length: the read is lines 2–5 of a 10-minute talk, not half of a 30 s clip
-      const req = L.buildRequest({ title: '测试：黑洞', duration: 600, lines: TEST_LINES.map((t, i) => ({ from: i * 4, to: i * 4 + 3.5, content: t })) });
-      const t0 = Date.now();
-      const r = await new Promise((res) => chrome.runtime.sendMessage({ type: 'BAS_LLM', request: { system: req.system, user: req.user, schema: req.schema } }, (x) => { void chrome.runtime.lastError; res(x || null); }));
-      if (!r || !r.ok) { setAiStatus('测试失败：' + ((r && r.error) || '后台没有响应'), 'err'); return null; }
-      const parsed = L.parseReply(r.text, req);
-      if (parsed.error) { setAiStatus('测试失败：' + parsed.error, 'err'); return null; }
-      const hit = parsed.candidates.some((c) => c.start <= 12 && c.end >= 19);
-      if (!hit) { setAiStatus('模型能连通，但没有认出测试字幕里的广告（换个模型试试）。', 'err'); return null; }
-      return `${((Date.now() - t0) / 1000).toFixed(1)} 秒`;
-    } catch (e) { setAiStatus('测试失败：' + ((e && e.message) || e), 'err'); return null; }
-  }
-  async function clearAi() {
-    await chrome.storage.local.remove(LLM_KEY);
-    try { await LLM.deleteSecret('apiKey'); } catch (e) { /* ignore */ }
-    for (const o of await grantedLlmOrigins()) { try { await chrome.permissions.remove({ origins: [o] }); } catch (e) { /* ignore */ } }
-    // the cached answers are a record of watched videos: they go too
-    try { const all = await chrome.storage.local.get(null); const ks = Object.keys(all).filter((k) => k.startsWith('a:')); if (ks.length) await chrome.storage.local.remove(ks); } catch (e) { /* ignore */ }
-    llmStored = null;
-    $('aiKey').value = ''; $('aiModel').value = '';
-    aiProviderChanged();
-    setAiStatus('已删除 AI 设置、密钥和 AI 分析缓存。');
-  }
-
   async function init() {
     try {
       const v = chrome.runtime.getManifest && chrome.runtime.getManifest().version;
@@ -461,12 +355,6 @@
     applyToForm(current);
     wire();
     updateStorageInfo();
-    try {
-      await loadAi();
-      $('aiProvider').addEventListener('change', aiProviderChanged);
-      $('aiSave').addEventListener('click', () => { saveAi().catch((e) => setAiStatus('保存失败：' + ((e && e.message) || e), 'err')); });
-      $('aiClear').addEventListener('click', () => { clearAi().catch(() => {}); });
-    } catch (e) { /* ignore */ }
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

@@ -63,9 +63,8 @@ src/content/10-storage.js         settings + per-video overrides + result cache
 src/content/20-protobuf.js        BAS.decodeDmSeg(ArrayBuffer|Uint8Array) → Danmaku[]
 src/content/21-wbi.js             BAS.wbi.sign(params, imgKey, subKey) + md5
 src/content/22-api.js             BAS.api.*
+src/content/27-subtitle-model.js  BAS.subtitleModel: the subtitle detector's weight tables (generated, §7.9)
 src/content/28-detect-subtitles.js BAS.detectSubtitles() (§7.9)
-src/content/29-detect-llm.js      BAS.detectLlm — AI transcript check: prompt + answer validation (§7.10)
-src/llm-providers.js              model wire formats (Anthropic / OpenAI-compatible), loaded by background.js (§7.10)
 src/content/30-detect-chapters.js BAS.detectChapters()
 src/content/31-detect-danmaku.js  BAS.detectDanmaku()
 src/content/32-media.js           BAS.MediaAnalyzer
@@ -335,13 +334,18 @@ Use:
 For ads the detectors missed. The viewer presses the control-bar ⏭ button (`.bas-ctrl-skip`, first child of
 `.bpx-player-control-bottom-right`, setting `skipHereButton`) or the popup button (`BAS_SKIP_HERE`). Only the END is
 needed, and weak evidence is acceptable because a human confirmed the ad. Order of trust: an existing segment/candidate
-covering now (any confidence, incl. ignored/dropped) → ≥ 2 agreeing 空降 targets posted in [t−150, t+60] → landing-marker
+covering now (any confidence, incl. ignored/dropped) → ≥ 2 agreeing 空降 targets (≥ 3 if bare numbers count) posted in
+[t−150, t+60] → the subtitle read containing now (§7.9 `readEndAt`, incl. a weaker rejected stretch) → landing-marker
 cluster after now → heat ramp containing now (its peak end; a second press past the middle jumps half a sample further)
-→ … the subtitle read containing now (§7.9 `readEndAt`; before heat) … → a single target → a chapter boundary ≤ 20 s
+→ a single target → a chapter boundary ≤ 20 s
 ahead (a farther one was a median 54 s past the ad's end) → +15 s. When results came from the cache, danmaku (with the
 bridge's preloaded segments) and subtitles are loaded with a 2.5 s deadline; the press never waits longer.
-Measured on 252 presses at ¼ / ½ / ¾ of crowd-labelled ads, within 3 s of the end: targets 92 %, landing markers 81 %,
-subtitle read 54–82 %, heat 67 %, single target 50 %, blind step 21 %; all together 65 % (61 % without subtitles).
+Measured on 936 presses at ¼ / ½ / ¾ of the held-out crowd-labelled ads (v2.0.0, this order, no known segment passed
+in), within 3 s of the end: targets 89 % (276 presses), subtitle read 89 % (398), landing markers 59 % (85, the presses
+with no read), heat 63 % (27), single target 45 % (11), blind step 21 % (139); all together 75 % (60 % without
+subtitles). With landing markers ahead of the read the read answered 217 presses at 88 % and the markers 266 at 73 %;
+where both answer, read 91 % vs markers 79 %, which is why the read now comes first (chosen on these presses, the only
+ones with danmaku collected).
 The toast offers 撤销 (seek back) and 记住 (store `[start estimate, end]` as a user segment). Measured: presses early /
 mid / late in the 7 ads land within 10 s every time (16/21 within 3 s) at full density; with 1/10 of the danmaku 18/21
 within 3 s; with heat only ±17 s.
@@ -458,79 +462,53 @@ Elsewhere:
 Input: the subtitle body `[{from, to, content}]`. Source (50-main.js `loadSubtitles`): the subtitle list in the player's
 own `x/player/wbi/v2` response, forwarded by the bridge (`BAS_PLAYER_INFO.subtitles [{lan, url}]`, `signed`); the bridge
 replays the last player infos on `BAS_REQUEST_STATE`, since the player asks before the content script listens. Waits up
-to 4 s for it; no API call of its own. Track: `zh*`, then `ai-zh`, then English. File: `BAS.api.getSubtitleBody` —
-only `https://(aisubtitle|i\d).hdslb.com/bfs/(ai_)?subtitle/…`, no cookies, 6 s timeout, ≤ 20 000 lines. A file whose last
-line is past `duration + 5` or before `duration − max(60, 25 %)` (unsigned listing: `max(30, 10 %)`) is another video's
-and is ignored. Setting `useSubtitles` (default true). A failed download keeps reads from the cache and is not cached.
+to 4 s for it. When it lists no usable file (signed out: the player lists AI subtitles only to signed-in viewers; or its
+response was missed), the list is read from `x/v2/dm/view?type=1&oid=<cid>&pid=<aid>` instead (`BAS.api.getDmViewSubtitles`,
+one request; a failed lookup is a failure, not "no subtitles"). An AI subtitle file is named after its video
+(`/bfs/ai_subtitle/prod/<aid><cid>…`); a listing that names another video's file is not used. Track: `ai-zh` (what the
+weights were counted from), then the uploader's `zh*`; no other language (the weights are Chinese). File: `BAS.api.getSubtitleBody` — only `https://(aisubtitle|i\d).hdslb.com/bfs/(ai_)?subtitle/…`, no cookies,
+6 s timeout, ≤ 20 000 lines. A file whose last line is past `duration + 5` or before `duration − max(60, 25 %)` (an
+unsigned player listing: `max(30, 10 %)`) is another video's and is ignored. Setting `useSubtitles` (default true). A
+failed download keeps the reads already known from the cache and is never cached as "no reads" (with no such reads
+the run is not cached).
 
-Line vocabulary (weights from video-level frequency on 76 crowd-labelled transcripts): 3 = calls to action (链接, 置顶,
-下单, 领券, 运费险, 保价 …, in the content of ≤ 1 video), 2 = shopping talk (评论区, 这款, 京东 …), 1 = common words that
-only support. English: a few regexes (sponsored by, use code, link in the description …).
+No AI, no network: the model `BAS.subtitleModel` (27-subtitle-model.js, generated, ~1 MB) is a set of static weight
+tables, fitted offline by logistic regression on 2 804 crowd-labelled videos (BilibiliSponsorBlock sponsor marks + the
+videos' AI subtitles; cross-validated by uploader). The detector only sums table weights and runs a dynamic programme.
 
 Algorithm:
-1. Seeds: runs of weight-3 lines ≤ 90 s apart.
-2. Product terms of a seed: 2–4-grams in ≥ 3 lines of `[c0 − 180, c1 + 40]`, at least one within `[c0 − 40, c1 + 20]`, at
-   least one in a line with vocabulary, none elsewhere in the video; no function-character fragments, no number fragments,
-   longest form kept.
-3. Start: a line matching the opener pattern (本期的推广位 / 本期视频由…赞助 / 恰饭 …) inside the seed is the start;
-   otherwise grow back ≤ 150 s over lines with vocabulary or a product term, gaps ≤ 20 s, stopping at an opener; then one
-   segue line (说到 / 话说 / 对了 …) right before.
-4. End: grow forward over lines with weight ≥ 2 or a product term, gaps ≤ 6 s.
-5. Accept: ≥ 2 different weight-3 terms with (score ≥ 8 or a product term) and ≥ 3 lines → confidence 0.75 + 0.03 per extra
-   term (+0.03 with a product term, ≤ 0.9); exactly one → needs a product term, score ≥ 8, ≥ 5 lines → 0.55 (offered).
-   Length 12–300 s. Rejected regions are returned for the skip button.
-6. More than 3 reads, or reads covering > 35 % of the video: all offer-only, ≤ 0.5 (a shopping video).
+1. Lines: normalised (half-width, lower case, digits → 0, CJK / a–z / 0 only), time-sorted. Per line: `o:` its
+   character 1–3-grams and `^xx` / `xx$` (first / last two characters); `b:` / `f:` the 2-grams of the lines in the 7 s
+   before / after it; bins of position in the video, reading speed, pause before it, line length, "burst" names (a 2–4-
+   gram said ≥ 3 times within 60 s and never more than 150 s away: a product), burst names in the 7 s around it, and the
+   share of its names said nowhere more than 120 s away. Work bounds for files that are not sentence-timed speech: at most
+   24 neighbouring lines per side count as context and the first 80 characters of a line are scored (real AI
+   subtitles have ≤ 20 lines in 7 s and rarely 80 characters).
+2. Line score: `w.bias + Σ w[feature]` (the main table, 20 000 weights) = ad log-odds.
+3. Segment: two-state Viterbi (content / read) maximising Σ over read lines of `alpha·(score − prior) − shift`, minus
+   `enter` per read; a pause > `maxGap` s ends a read.
+4. Edges (`refine`): the start is moved to the change point, within `sBack` s before / `sFwd` s after the first line,
+   that best separates "not yet a read" from "read" by the start table (the line's own features only), plus
+   `sBeta × log P(a read opens here)` from the boundary table `bstart` (the line, the line before it, the pause between);
+   the end the same way backwards, within `eFwd` s before / `eBack` s after the last line, with the end table (the line
+   and the 7 s after it) and `bend` (the line, the line after it, the pause). Edges land on sentence boundaries.
+5. Read score: logistic regression `seg` over stretch features — mean / sum / max of the line scores (minus the prior),
+   log length (s) and log line count, position in the video, whether it starts in the first 15 s, the mean score of the
+   lines in the 30 s before and after it, and the best 5-line mean score elsewhere in the video (outside the stretch
+   ± 30 s) → p.
+6. Accept: length 8–420 s; p ≥ `auto` (0.9) → auto-skip, confidence 0.75 + 0.2·(p − auto)/(1 − auto) ≤ 0.95;
+   `offer` (0.6) ≤ p < `auto` → offered, 0.5; below → rejected (returned for the skip button).
+7. More than `maxReads` (4) auto reads, or auto reads covering > `maxShare` (40 %) of the video: all offer-only, ≤ 0.5
+   (a shopping video). An offered segment's button names its source (字幕建议跳过 / 弹幕建议跳过 / 众包建议跳过).
 
-`readEndAt(lines, t, duration)`: the accepted or rejected read containing t → its end (`findAdEnd` source `subtitle`).
-Following the talk forward without a read was measured worse than the blind step and is not done.
+`readEndAt(lines, t, duration)`: the accepted read containing t → its end; else a rejected stretch with p ≥ 0.15 and
+≥ 6 s containing t (`detected: false`) (`findAdEnd` source `subtitle`). The detection is kept per prepared transcript,
+so a press does not rescore it. Following the talk forward without a read was
+measured worse than the blind step and is not done.
 
-Measured (README "AI subtitles"): on the transcripts it was developed on, 46 % of labelled ad time, 33 s of content in 76
-videos, start +2.7 s / end −2.1 s median vs the label; in the pipeline without crowd marks 22 % → 43 % of labelled ads
-auto-skipped, 0 auto-skips on unlabeled content.
-
-### 7.10 AI transcript check — `BAS.detectLlm` (29-detect-llm.js) + `BAS_LLM` (background.js, llm-providers.js)
-
-The primary detector when the viewer has set up a model. Transcript: the subtitle file from §7.9's loader, which also
-asks `x/v2/dm/view?type=1&oid=<cid>&pid=<aid>` when the player's own listing has none (signed-out viewers); an AI file's
-path must contain `<aid><cid>`.
-
-* `buildRequest({title, duration, lines})` → `{system, user, schema, lines, duration, version}`. User message:
-  `Title`, `Duration`, then one line per subtitle `<n>|<m:ss>|<text>` (≤ 4000 lines / 120 000 chars). The system prompt
-  defines an inserted sponsored segment, its boundaries (segue line … last line about the promotion; the first sentence
-  back on topic is content), what is not one (the video's own topic, self-promotion → `self_promo`, passing mentions),
-  and the JSON answer `{segments:[{first,last,kind,product,confidence,first_quote,last_quote}], whole_video_commercial}`.
-* `parseReply(reply, req)`: JSON (plain, fenced or embedded) → candidates `source:'llm'`, edges = `lines[first].from` …
-  `lines[last].to`. Rejected: indices out of range; a quote not found (punctuation-insensitive, first 6 chars) within ±1
-  line of its index; `self_promo`; < 4 s; > 50 % of the video. `kind:'unsure'`, confidence < 0.85 or
-  `whole_video_commercial` → `offerOnly`, confidence ≤ 0.55; otherwise confidence 0.6 + 0.4 × the model's. The 0.85
-  threshold is 0.75 for Claude Opus / Sonnet / Fable (`autoConfidenceFor`; they rate their reads lower). Quotes are
-  required (≥ 2 characters each); any `kind` other than `sponsor` / `self_promo` counts as `unsure`. A read over 360 s,
-  or reads that together cover > 40 % of the video or number more than 5, are all offered (the total is checked, not
-  each read: touching reads would otherwise merge into one long skip).
-* Second question (`buildVerifyRequest` / `parseVerifyReply`): for up to 3 reads offered only because the model hedged
-  (`unsure`, or confidence 0.1–0.85), the passage ±25 lines with its original line numbers goes back with "is lines X–Y
-  an inserted sponsored segment?". `sponsor` → a new candidate with the refined edges (auto-skip at ≥ 0.85; edges must
-  stay inside the passage and within 60 s of the flagged read); `not_sponsor` → dropped; `unsure` / invalid → the offer
-  stays. Cached with the first answer (`a:<cid>.verify`).
-* Request path: content script → `BAS_LLM {request:{system,user,schema}}` → background reads `llmConfig`
-  (`{provider, model, baseUrl, keyHint, rev}`, no key) from `chrome.storage.local` and the key from the extension
-  origin's IndexedDB (`bas-secrets`/`kv`/`apiKey`; content scripts can read storage.local but not this database), checks
-  the optional host permission for that origin, calls the provider (90 s timeout, one retry on 429 / 5xx / network, none
-  on a reply cut at the token cap) → `{ok, text}`. Guards: ≤ 2 in flight, ≤ 60 per hour and ≤ 400 per day
-  (`chrome.storage.session`), the same prompt within 10 min answered once. The options page keeps a saved key only for
-  the same provider at the same origin, and removes the host permission of a service no longer used.
-  Anthropic: `POST /v1/messages`, `anthropic-version: 2026-10-21`, `output_config: {effort:'low', format:{type:'json_schema'}}`,
-  `anthropic-dangerous-direct-browser-access: true`, no sampling parameters. OpenAI-compatible: `POST <base>/chat/completions`,
-  `response_format: json_object`, temperature 0 (not for OpenAI), per-provider extras (thinking off for DeepSeek / GLM,
-  `enable_thinking:false` for Qwen). Keys only over https, or http to localhost.
-* Cache: `a:<cid>` in `chrome.storage.local` = `{fp, v, model, reply, ts}`, 60 days, ≤ 3000 entries; reused only when the
-  transcript fingerprint, prompt version and model match.
-* Orchestrator: the request starts as soon as the transcript is in, without holding up the other sources; its answer
-  replaces the word-list reads (`source:'subtitle'`) of the same transcript and is merged and re-fused when it arrives.
-  A fresh result cache made without it does not short-circuit the run while a model is set up. Setting or removing a
-  model in the options applies to the open video. The skip button waits up to 6 s for a running request.
-* Fusion (§7.4 step 2): a non-offer `llm` read is a host like chapters and crowd marks (danmaku and word-list reads
-  overlapping it merge into it); priority between crowd and subtitle.
+Measured (README "Accuracy" → "AI subtitles"): cross-validated on the 2 804 training videos (by uploader, 3 splits)
+76 % of crowd ads auto-skipped at p ≥ 0.9, 0–2 stretches outside every mark; on the 290 held-out test videos with a
+transcript 68.7 % from the transcript alone, no auto-skip on unlabeled content.
 
 ## 8. Skipper — `new BAS.Skipper(video, opts)`
 

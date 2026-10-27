@@ -1,24 +1,20 @@
 # Bilibili Ad Skipper（恰饭跳过）
 
 A Chrome (Manifest V3) extension that detects and skips in-video sponsored segments (恰饭 / 植入广告) on
-`www.bilibili.com/video/*`. Its main detector reads the video's AI subtitles with a language model you choose (your own
-API key, about $0.001 per video): it finds what the uploader says in a sponsored read, sentence by sentence. Without a
-model it falls back to danmaku, crowd marks, the heat curve and keyword rules, which find roughly half the ads. There is
-no server of its own, no accounts and no analytics; the requests that leave bilibili (the model you set up, the
-crowd-mark lookup) are described under Privacy.
+`www.bilibili.com/video/*`. Detection runs locally in your browser. There is no server of its own, no accounts and no
+analytics. The one third-party request, the optional crowd-mark lookup, is described under Privacy.
 
 > Unofficial project, not affiliated with bilibili. Released under the MIT license.
 
 ## How it detects an ad
 
-Up to eight signals are fused into time segments with a confidence score:
+Seven independent signals are fused into time segments with a confidence score:
 
 | Signal | What it uses | Confidence |
 |---|---|---|
-| **AI transcript check (AI 字幕分析, recommended)** | The video's AI subtitles (listed by the player, or by `x/v2/dm/view`, which also answers signed-out viewers) go to a language model of your choice with the title, as numbered lines. It answers with the first and last line of each sponsored read and quotes from both; the extension checks those quotes against the subtitles before using the answer. Edges are the subtitle sentences themselves. Uncertain reads, and videos that are commercial from start to end, are only offered. | 0.6 – 0.97 |
 | **Chapters (章节 / 视频看点)** | Uploader chapters from the player API whose title says 广告 / 恰饭 / 赞助 / 推广 / 商单 … | 0.95 |
 | **Crowd marks (小电视空降助手)** | Segments that viewers of [BilibiliSponsorBlock](https://github.com/hanydd/BilibiliSponsorBlock) marked by hand and voted on (downvoted ones are hidden). Where a video has one it is the most precise signal (edges within ~1 s); a disputed mark is only offered. | 0.9 – 0.98 |
-| **AI subtitles (AI 字幕)** | What the uploader says, from the AI subtitle file the player itself lists for signed-in viewers. A sponsor read ends in calls to action that ordinary talk almost never contains (链接 / 置顶 / 领券 / 下单 / 保价 / 运费险 …); the read is grown around them over lines that repeat the product's name (a term said there and nowhere else in the video), and starts at an announcement such as 本期的推广位. Edges land on sentence boundaries. Two different calls to action auto-skip; one is only offered. A video that sells from start to end (好物推荐) is only offered. | 0.55 – 0.9 |
+| **AI subtitles (AI 字幕)** | What the uploader says, from the video's AI subtitle file. **No AI is involved and nothing is sent anywhere:** every line gets a score from a table of phrase weights that ships with the extension, counted from 2 804 crowd-labelled videos (how much more often a phrase such as 链接 / 置顶 / 领券 is said inside a marked ad than outside one, plus the phrases said in the 7 s around the line, where it sits in the video, how fast it is read, and whether it repeats a name said nowhere else in the video — the product). A two-state segmenter joins the lines that add up to a read; four more tables of the same kind (two per edge: one that tells read from talk, one for the sentence a read opens or closes on) put each edge on a sentence boundary; the stretch is then scored as a whole (how strong, how long, how it stands out from the talk around it). p ≥ 0.9 auto-skips, 0.6 – 0.9 is offered as a button. A video that sells from start to end (more than four auto-skipped reads, or reads over 40 % of it) is only offered. | 0.5 – 0.95 |
 | **Danmaku (弹幕)** | All danmaku of the video (same protobuf API the player uses). Clusters of *ad announcements* (恰饭了, 广告来了, 零帧起手, 感谢金主…), *jump cues* (空降 6:00, 跳伞04:50, 745工程, 坐标609, 向右20下 …) and *landing thanks* (欢迎回来, 空降成功, 感谢609工程 …). The median of agreeing jump targets gives the end; thanks clusters confirm it. | 0.2 – 1.0 |
 | **Viewer heat (高能进度条)** | The player's own viewer-activity curve (about 100 samples per video, served without login). When many viewers drag past an ad, the curve ramps up across it, peaks at its end and falls off a cliff. A danmaku segment that matches gets +0.2 confidence, which lets thin danmaku (e.g. signed out) still auto-skip. On popular videos it also blocks auto-skips that have no 空降 coordinates when the curve shows no skipping. Alone, it only offers a manual skip button. | confirmation |
 | **Audio / video look-ahead** | For a likely ad the danmaku cannot confirm on their own (they name an ad but are too few), *before you reach it*, the extension downloads just that stretch (plus 45 s around it) of the video's own lowest-bitrate audio track and its 360p picture, using the byte index every bilibili stream carries (about 4–12 MB per segment, at most 60 MB per video), decodes it in the page (`decodeAudioData`, WebCodecs) and compares the inside with the surroundings. Many sponsored reads are **louder**, **steadier** (narration over music, no pauses) and **brighter** than the video around them. When a segment clearly is, and its danmaku name an ad (恰饭 / 广告 … or landing thanks), it gets +0.25 confidence. That lifts thin-danmaku ads to auto-skip. It also finds the end for danmaku that only announce an ad's start. It never blocks a segment: on crowd-labelled ads a third of the real ones looked no different from their surroundings. | confirmation, open-ended ends |
@@ -26,7 +22,7 @@ Up to eight signals are fused into time segments with a confidence score:
 
 Rules that keep false positives down (all learned from 50 real videos, see `test/fixtures/expected.json`):
 
-* A segment is **auto-skipped only when confidence ≥ 0.6** (configurable). That requires either ≥ 3 viewers agreeing on a landing time, or explicit ad vocabulary **plus** a strong end marker. A lone "跳伞23:36" or story words like 躲过一劫 never auto-skip.
+* A segment is **auto-skipped only when confidence ≥ 0.6** (configurable). For a danmaku segment that requires either ≥ 3 viewers agreeing on a landing time, or explicit ad vocabulary **plus** a strong end marker. A lone "跳伞23:36" or story words like 躲过一劫 never auto-skip.
 * "打钱 / 商单 / 广子" jokes that are spread over a whole sponsored review, "开屏广告" discussions, "怎么还没广告" anticipation and other negations are ignored.
 * Opening skips ("跳伞04:50" posted at 0:00, "正片2:00", "省流 跳转4:00") are shown as an **offer** (a skip button and a dashed marker) but never skipped automatically.
 * Jump targets into the very end of a video (the last 1 %, at least 8 s) are ignored: those are "skip to the end"
@@ -40,37 +36,30 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
 
 * Detection talks to bilibili's own servers (`api.bilibili.com`, `bvc.bilivideo.com` and the video CDN the player itself
   streams from), making the same kind of requests the bilibili player makes. There is no analytics.
-* **AI transcript check (off until you set up a model in the options).** For each video with AI subtitles, the
-  background worker sends the video title and the full subtitle text to the model service you chose (Anthropic,
-  DeepSeek, Alibaba Qwen, Zhipu GLM, OpenAI, Google Gemini, or your own OpenAI-compatible server such as Ollama), with
-  your API key. That service therefore learns which videos you watch and processes the text under its own privacy
-  policy. Nothing else is sent: no cookies, no bilibili account data. The key is stored only in the extension's own
-  IndexedDB, which web pages and content scripts cannot open (not synced, not exported), and is sent only over https (or
-  to your own machine). The extension asks for permission to reach that one service when you save, and gives back the
-  permission of a service you stop using. Answers are cached for 60 days, so a video is analysed once; 删除 AI 设置
-  removes the key, the permission and those cached answers. To stop runaway spending (a bug, or a script on a page
-  forging new videos), the background worker sends at most 2 requests at a time, 60 an hour and 400 a day.
-* **AI subtitles.** The list of subtitle files is read from the player's own `x/player/wbi/v2` response. When it has
-  none (signed out, or the player's request was missed) the extension asks `x/v2/dm/view` once. The chosen file
-  (Chinese first, then English) is downloaded once per video from bilibili's subtitle CDN (`aisubtitle.hdslb.com`),
-  without cookies, as the player does when subtitles are turned on.
-* **Crowd marks (one third-party request, on by default; turn off with 众包片段库 in the options).** For each video whose
-  results are not cached, the background worker asks `bsbsb.top` (BilibiliSponsorBlock, served through Cloudflare):
+* **AI subtitles (on by default; turn off with 字幕口播识别).** The list of subtitle files is read from the player's own
+  `x/player/wbi/v2` response. When that lists none (bilibili lists AI subtitles there only to signed-in viewers), the
+  list comes from one request to `api.bilibili.com/x/v2/dm/view`, the same kind of bilibili API call as the danmaku
+  ones. The chosen file (the AI Chinese track, else the uploader's Chinese one) is downloaded when the video is analysed
+  (a visit with no results from the last hour) from bilibili's subtitle CDN (`aisubtitle.hdslb.com`, or `i0.hdslb.com`
+  for an uploader's file), without cookies, exactly as the player does when subtitles are turned on. The text is scored
+  in memory against the weight table that ships with the extension; no AI service or model download is involved, and
+  only the resulting segments go into the result cache.
+* **Crowd marks (one third-party request, on by default; turn off with 众包片段库 in the options).** For each video without
+  results from the last hour (results are kept 12 hours but refreshed in the background after one), the background
+  worker asks `bsbsb.top` (BilibiliSponsorBlock, served through Cloudflare):
   - **Sent:** only the first 4 hex digits of `sha256(BV id)`. The server answers with every marked video in that
     bucket, usually several, and the match is made locally, so the server learns only that you watch one of them.
   - **Not sent:** no cookies, no account data, no Referer.
   - **Visible to them anyway:** like any request, it shows your IP address, the browser's User-Agent / Accept-Language,
     and an `x-ext-version: bilibili-ad-skipper/<version>` header, which their API asks clients to send.
-  - The answer is cached with the other results for 12 hours.
+  - The answer is cached with the other results.
 * The audio/video look-ahead fetches byte ranges of the video's own streams and analyses them in memory. It only runs
   for likely ads the danmaku cannot confirm on their own: most videos need none, about 1 MB per video on average. No
   audio or picture is stored; only the verdict goes into the result cache. Turn it off with **音视频预读核验**. The skip
   button's media check (about 5 MB per press) is a separate setting.
 * Settings sync through `chrome.storage.sync`. Per-video ignores and a 12-hour result cache stay in `chrome.storage.local`.
 * Host permissions are limited to `www.bilibili.com`, `api.bilibili.com`, `bvc.bilivideo.com` and `bsbsb.top` (the
-  crowd lookup), plus, only when you set up the AI transcript check, the one model service you chose (an optional
-  permission Chrome asks you about). The video and subtitle CDNs answer the page's own requests, so they need no extra
-  permission.
+  crowd lookup). The video and subtitle CDNs answer the page's own requests, so they need no extra permission.
 
 ## Install (unpacked)
 
@@ -78,11 +67,10 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
 2. Click **Load unpacked** and choose this folder (`bilibili-ad-skipper`).
 3. Open any bilibili video. Detected segments appear as coloured markers on the progress bar
    (orange = chapter, purple = crowd mark, teal = AI subtitles, pink = danmaku, green = your own, striped = low confidence, dashed = offer only).
-4. **Set up the AI transcript check** (recommended): open the extension's options, pick a model service, paste your API
-   key and press **保存并测试**. Claude Haiku 5.5 is the tested default; Zhipu GLM-4.7-Flash is free; DeepSeek and Qwen
-   work from mainland China. The test sends a short made-up transcript and checks the answer.
-5. After updating the files (e.g. `git pull`), press the extension's **reload** icon on `chrome://extensions`. Until you do,
+4. After updating the files (e.g. `git pull`), press the extension's **reload** icon on `chrome://extensions`. Until you do,
    Chrome keeps running the old version; the extension notices the mismatch and says so in a toast on the video page.
+   Updating from v1.0.0 (which sent the subtitles to an AI model) deletes the API key, AI settings and AI answers it
+   stored; nothing from that version is used any more.
 
 ## Using it
 
@@ -92,8 +80,9 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
 * **Manual mode**: a **跳过广告 ▶** button appears instead; click it to skip.
 * **Missed an ad?** Click the **⏭** button in the player's control bar (or 跳过正在播放的广告 in the popup) while the ad
   plays. It jumps at once, using everything known around that moment, even evidence too weak to auto-skip on, in this
-  order: a segment shown but not skipped; 空降 coordinates posted near now; landing danmaku (欢迎回来 / 空降成功); the
-  sponsor read in the AI subtitles; the heat curve; a single coordinate; a chapter boundary at most 20 s ahead. If
+  order: a segment shown but not skipped; 空降 coordinates posted near now; the sponsor read in the AI subtitles
+  (also a weaker one the detector did not skip); landing danmaku (欢迎回来 / 空降成功); the heat curve; a single
+  coordinate; a chapter boundary at most 20 s ahead. If
   nothing is found it moves forward 15 s and offers **再前进**. Otherwise the toast offers **撤销** and **记住** (save it
   as an ad for this video, so it is skipped automatically next time). When the results came from the cache it may wait
   up to 2.5 s for the danmaku / subtitles. An optional media check (off by default, a few seconds and about 5 MB per
@@ -115,10 +104,10 @@ src/content/00-ns.js          BAS namespace, utils (time parsing incl. 空降 fo
 src/content/10-storage.js     settings / overrides / cache
 src/content/20-protobuf.js    danmaku protobuf decoder
 src/content/21-wbi.js         WBI signing (md5) for the signed API variants
-src/content/22-api.js         view / player info / danmaku / subtitle fetch (direct, with background fallback)
-src/content/28-detect-subtitles.js  keyword fallback: sponsor reads in the AI subtitles (calls to action + product name)
-src/content/29-detect-llm.js  AI transcript check: prompt, answer validation (quotes, line ranges), candidates
-src/llm-providers.js          model services: Anthropic Messages / OpenAI-compatible request + reply mapping (background)
+src/content/22-api.js         view / player info / danmaku / heat / subtitle list + file / crowd lookup (api.bilibili.com
+                              direct with background fallback; crowd lookup via the background; subtitle files direct)
+src/content/27-subtitle-model.js    the subtitle detector's phrase-weight tables (generated from crowd-labelled videos)
+src/content/28-detect-subtitles.js  sponsor reads in the AI subtitles (phrase weights, segmenter, edges), skip-button reads
 src/content/30-detect-chapters.js
 src/content/31-detect-danmaku.js
 src/content/32-media.js       frame/audio transition analyzer
@@ -150,6 +139,12 @@ The detector was tuned on danmaku from 50 public videos. That corpus is other pe
 included in this repository; tests that need it (`test/fixtures-full/`) are skipped automatically. The same goes for the
 audio/video features measured from 18 stretches of those videos (`test/fixtures-full/av/`, numbers only). The ground truth
 (`test/fixtures/expected.json`, frame-measured ad boundaries) and the heat curves (`test/fixtures/pbp.json`) are included.
+
+The subtitle weights (`src/content/27-subtitle-model.js`) are generated by a training script that is not part of this
+repository: it fits logistic regressions (FTRL for the phrase tables, Newton for the stretch score) to the
+BilibiliSponsorBlock marks and the AI subtitles of the labelled videos, cross-validated by uploader. Both are
+third-party data and stay local. The file holds only the resulting numbers: n-grams of 1–3 characters with a weight
+each, and the detector settings.
 
 Detector report over all fixtures (needs the private corpus):
 
@@ -197,55 +192,47 @@ and three opening skips):
 | Live check on bilibili (v0.4.1, 2026-10-17) | measured ads auto-skipped (ends from the danmaku, e.g. 1.2 s late on BV1jCJs6UE9S); the thin-danmaku ad gets its end from the media; an intro the media calls ad-like stays a button |
 | Cost per suspected segment | 4–12 MB (audio ≈ 66 kbps + 360p video 125–400 kbps depending on the codec), 4–10 s in the background; at most 60 MB per video |
 
-### AI transcript check (2026-10-26)
+### AI subtitles (v2.0.0, 2026-10-27)
 
-Test data: the AI subtitles of 290 BilibiliSponsorBlock videos, read signed in. Set A, 76 videos, is the one the prompt
-and the answer checks were written against. Set B is held out: 214 videos, 156 with a crowd-marked sponsor read and 58
-controls where people marked only other things. The model got exactly the request the extension sends, and its answers
-went through the extension's own checks (`BAS.detectLlm.parseReply`). Every disagreement with the crowd was then judged
-by three independent strong-model reviewers reading the transcript.
+The subtitle weights were counted from **2 804 crowd-labelled videos** (BilibiliSponsorBlock sponsor marks on videos
+marked since 2025, 2 633 ads, plus 368 control videos where people marked other things but never a sponsor), with the
+AI subtitles fetched signed out. Everything below uses the shipped settings (auto-skip at p ≥ 0.9). "Outside every
+mark" means a skip with < 30 % of it inside any crowd mark; "content cut" counts skipped seconds outside every mark ± 3 s.
 
-| Held-out set B | Claude Haiku 5.5 | Claude Opus 5.5 (default) |
-|---|---|---|
-| Crowd-marked ads auto-skipped (IoU ≥ 0.4), first answer | 159 / 174 (91.4 %) | 164 / 174 (94.3 %) |
-| … with the second question for uncertain reads | **163 / 174 (93.7 %)** | **164 / 174 (94.3 %)** |
-| Crowd-marked ads auto-skipped or offered | 96.0 % | 96.6 % |
-| Auto-skips on content nobody marked | 6 of 180; reviewers judged all 6 to be real ads the crowd had missed | 5 of 180; the 4 reviewed were real ads |
-| Auto-skips on the 58 control videos | 3 videos, all real sponsor reads (Snyk, JD esports, a sponsor segue) | 2 videos, real |
-| Start / end vs the crowd label, median (p10 … p90) | 0.0 s (−3.5 … +4.3) / −0.1 s (−1.5 … +0.8) | −0.1 s (−6.2 … +0.6) / −0.1 s (−1.2 … +1.0) |
-| Invalid replies | 0 of 214 | 0 of 214 |
+| | ads auto-skipped (IoU ≥ 0.4) | skips outside every mark | control videos with a skip | content cut |
+|---|---|---|---|---|
+| Cross-validation, 3 different uploader splits (no uploader in both training and test) | **75.9 – 76.0 %** | 0 – 2 of ~2 010 | 0 – 1 of 368 (inside a self-promotion mark) | 1 070 – 1 355 s in 2 804 videos |
+| Same corpus and splits, the first version of this detector (12 s context, plain edge tables, simpler stretch score) | 72.5 – 76.5 % | 4 – 7 | 1 – 3 | 2 207 – 2 605 s |
+| **Held-out test** (290 videos with a transcript never used for fitting or tuning, 265 ads), transcript alone | **68.7 %** (75.5 % at least offered) | 0 | 1 of 58 (inside a range users marked as intro) | 25 s |
+| Held-out test, the whole extension without crowd marks (subtitles + danmaku + heat + chapters) | **70.2 %** (77.4 % offered) | 0 | 1 of 58 | 90 s |
+| Held-out test, the same without subtitles | 22.3 % | 0 | 1 of 58 | 69 s |
 
-On set A (development): 95.6 % → 96.7 % with the second question (Haiku), 90.1 % (Opus; several of its labels are
-disputed or whole-video sponsorships), no auto-skip on unmarked content. Opus rates its reads more cautiously than
-Haiku, so its auto-skip threshold is 0.75 instead of 0.85 (calibrated on these sets: 10 of its 11 reads at 0.75–0.85
-were crowd-marked ads). Cost per video at about 10 000 transcript tokens: Opus 5.5 about $0.04, Haiku 5.5 about $0.001;
-set `claude-haiku-5-5` as the model in the options to use it.
+Earlier versions on the same held-out videos: the v0.6 word list 33.6 %; the first version of this table (counted from
+169 videos) 64.5 %.
 
-What the remaining misses are, by the reviewers' reading of the transcript: a game tie-in that is the premise of the
-whole video (no separate read), a short sponsor mention in passing (5–11 s), and reads the model found but scored
-below the auto-skip threshold; those are offered with the button, and the second question promotes most of them. Of
-the confident reads (model confidence ≥ 0.9), 246 of 252 matched a crowd mark and none was judged to be content.
+**Skip button (⏭)** pressed at ¼, ½ and ¾ of each held-out ad (936 presses, with no known segment passed in: neither
+crowd marks nor the detectors' own segments): lands within 3 s of the labelled end **75 %** of the time (81 % on videos
+with a transcript), against 60 % without the subtitles. Where both
+answer, the subtitle read (91 %) beats the landing danmaku (79 %), so it now comes first; that order was chosen on these
+same presses, the only ones with danmaku collected.
 
-Without AI subtitles there is nothing to read: 41 of the 197 sponsored videos in set B had none listed for a
-signed-in viewer. For those the other sources (crowd marks, danmaku, heat) still apply.
+**Popular videos** (425 from bilibili's 热门 / 每周必看 lists with a Chinese subtitle file, 419 of them AI subtitles; most
+carry no ad). Each stretch the detector produced was judged against the transcript, and a random 160 of the videos were
+read in full, blind to the detector, to list every sponsor read. The reviewers were language models given the
+transcripts (this is only how the evaluation was done; the extension itself uses no AI):
 
-### AI subtitles: keyword fallback (2026-10-26)
+| | result |
+|---|---|
+| Auto-skips that are a real sponsor read | **44 / 44** (in 44 videos) |
+| Content inside those skips | 27 s of 2 661 s (2 started > 3 s early, 2 ended > 3 s late) |
+| Explicit sponsor reads auto-skipped (blind sample: 27 reads in 24 of 160 videos) | **18 / 27 (67 %)**; crowd marks alone 14, both together 19 |
+| Auto-skips on content in the blind sample | 0 |
+| Offered stretches (skip button only, p 0.6 – 0.9) | 15: 4 sponsor reads, 2 products woven into the content, 2 self-promotion, 7 content |
 
-Transcripts of 100 crowd-labelled videos were read signed in; 76 had a matching AI subtitle file (32 000 lines). These
-are the videos the vocabulary and rules were developed on, so the numbers are optimistic; checking them on videos the
-rules have not seen is the next step.
-
-| on the 94 of those videos with collected danmaku, crowd marks off | without subtitles | with subtitles |
-|---|---|---|
-| Labelled ads auto-skipped (IoU ≥ 0.4) | 22 / 101 (22 %) | **43 / 101 (43 %)** |
-| Labelled ads at least offered | 38 % | 54 % |
-| Auto-skips on content nobody labelled | 0 / 22 | 0 / 50 |
-| Auto-skips ending > 3 s past the label | 0 | 3 (3 – 11 s) |
-
-The subtitle detector alone covers 46 % of the labelled ad time and wrongly covers 33 s of content in 76 videos (one
-coupon joke, shown as an offer, not skipped). Its starts are a median 2.7 s after the label (the segue line plays), its
-ends 2.1 s before it. Skip-button presses at ¼, ½ and ¾ of each labelled ad (252 presses) land within 3 s of the
-labelled end 65 % of the time (61 % without subtitles); with a 空降 consensus 92 %, with only a blind step 21 %.
+Missed reads were mostly a sponsor demoed inside the content without a call to action (a weather app in a motorbike
+vlog, a milk brand in a cooking clip), long tourism or whole-video placements, a sponsor thanked at the end of a series
+finale, and one chair read scored 0.76 – 0.83 (offered, not skipped). Products woven into the content (12 placements in
+10 of the 160 videos, 6 of them the whole video) are never auto-skipped: there is no separate read to skip.
 
 ### Crowd marks + detectors on today's popular videos (2026-10-17)
 
@@ -294,11 +281,13 @@ ends worse as better against the crowd. To rerun the test: `tools/bsb-prepare.py
 
 * Danmaku-based detection needs viewers to have reacted; very new or unpopular videos may have no usable danmaku.
   Logged-in users receive far more danmaku than anonymous ones.
-* AI subtitles are listed only for signed-in viewers, and only about three in four videos have them. A read without a
-  call to action (only the product praised, "感兴趣可以去看看") is not found from the subtitles. A product mentioned in
-  the content (a review, a sale guide) can look like a read with one call to action; that is why one is only offered.
-* Boundaries come from crowd timing: a skip typically starts ~3 s after the crowd-labelled start (the segue into the
-  ad plays) and ends within a couple of seconds of the labelled end.
+* About three in four videos have an AI subtitle file; the rest get nothing from the subtitles. A product woven into the
+  content (a whole sponsored review, a skit, a game played in a vlog) has no separate read to find, and short mentions
+  (10–20 s, an app named in passing) mostly score too low to skip. Spec-and-price talk (a phone-launch roundup, a sale
+  list) can score like a read; those stay below the auto-skip threshold and are at most offered.
+* The subtitle weights were counted from Chinese transcripts: English and other tracks are not downloaded or scored.
+* Boundaries: a subtitle skip starts a median 1 s after the crowd-labelled start (the segue line may play) and ends
+  within 3 s of the labelled end 90 % of the time; danmaku-only skips start a median 3 s late.
 * The audio/video check only confirms: about a quarter of real ads are clearly louder, steadier and brighter than their
   surroundings; the rest are left to the danmaku. Intros and OP songs look the same to it, so bare 空降 coordinates
   never get its boost.

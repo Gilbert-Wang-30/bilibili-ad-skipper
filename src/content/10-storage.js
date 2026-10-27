@@ -11,8 +11,6 @@
   const CACHE_TTL_MS = 12 * 60 * 60 * 1000;   // 12 h
   const CACHE_MAX = 300;                      // keep at most this many `c:` entries (LRU by ts)
   const WBI_TTL_MS = 6 * 60 * 60 * 1000;      // 6 h
-  const LLM_TTL_MS = 60 * 24 * 3600 * 1000;    // model answers: 60 days (the transcript rarely changes; each costs a request)
-  const LLM_MAX = 3000;
   const PRUNE_EVERY = 20;                     // run the (expensive) prune every N setCache calls
 
   const cacheKey = (cid) => `c:${cid}`;
@@ -311,32 +309,9 @@
     if (drop.length) await remove('local', drop);
     return drop.length;
   }
-  // ---------- AI transcript check answers (`a:<cid>`) ----------
-  async function getLlm(cid) {
-    const key = 'a:' + cid;
-    try {
-      const e = (await get('local', key))[key];
-      if (!e || typeof e !== 'object' || typeof e.ts !== 'number' || Date.now() - e.ts >= LLM_TTL_MS) return null;
-      return e;
-    } catch (e) { return null; }
-  }
-  async function setLlm(cid, entry) {
-    try { await set('local', { ['a:' + cid]: Object.assign({}, entry, { ts: Date.now() }) }); } catch (e) { BAS.warn('setLlm failed', e); }
-    if (setCacheCount++ % PRUNE_EVERY === 0) {
-      (async () => {
-        const all = await get('local', null);
-        const live = Object.keys(all).filter((k) => k.startsWith('a:')).map((k) => [k, (all[k] && all[k].ts) || 0]);
-        const drop = live.filter(([, ts]) => Date.now() - ts >= LLM_TTL_MS).map(([k]) => k);
-        const keep = live.filter(([, ts]) => Date.now() - ts < LLM_TTL_MS).sort((a, b) => a[1] - b[1]);
-        if (keep.length > LLM_MAX) for (const [k] of keep.slice(0, keep.length - LLM_MAX)) drop.push(k);
-        if (drop.length) await remove('local', drop);
-      })().catch(() => {});
-    }
-  }
-
   async function clearCache() {
     const all = await get('local', null);
-    const keys = Object.keys(all).filter((k) => k.startsWith('c:') || k.startsWith('a:'));
+    const keys = Object.keys(all).filter((k) => k.startsWith('c:') || k.startsWith('a:'));   // a: v1.0.0's AI answers
     if (keys.length) await remove('local', keys);
     return keys.length;
   }
@@ -379,7 +354,7 @@
     get, set, remove, onChanged,
     sanitizeSettings, loadSettings, saveSettings, resetSettings, onSettingsChanged,
     getOverrides, addIgnore, addUser, removeIgnore, clearOverrides, clearAllOverrides,
-    getCache, setCache, pruneCache, clearCache, getLlm, setLlm,
+    getCache, setCache, pruneCache, clearCache,
     getWbiKeys, setWbiKeys,
     exportData, importData,
     /** test hook: reset the in-memory fallback */

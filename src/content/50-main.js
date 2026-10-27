@@ -21,8 +21,6 @@
   const AV_MAX_BYTES = 60 * 1024 * 1024;   // background look-ahead budget per video
   const SUB_WAIT_MS = 4000;           // wait this long for the player's own info (it lists the subtitle files)
   const SKIP_WAIT_MS = 2500;          // the skip button never waits longer than this for danmaku / subtitles
-  const SKIP_LLM_WAIT_MS = 6000;      // … or for an AI transcript check that is already running
-  const LLM_NEGATIVE_TTL_MS = 24 * 3600 * 1000;   // an unusable model reply is not re-requested for a day
 
   const state = {
     video: null,               // {bvid, aid, cid, p, title, duration, mid, upName}
@@ -49,10 +47,7 @@
     bridgePlayerInfo: new Map(), // cid(string) -> view_points
     bridgeHeat: new Map(),     // cid(string) -> parsed heat curve captured from the player's own request
     bridgeSubs: new Map(),     // cid(string) -> {list:[{lan,url}], signed} subtitle files listed in the player's own request
-    subtitles: null,           // {cid, lines, lan, body} — AI subtitle lines of the current video
-    llm: null,                 // {cid, status:'running'|'ok'|'error'|'off', candidates, note, promise} — AI transcript check
-    llmStatus: null,           // {configured, label, model} from the background worker (the key itself never comes here)
-    doneCid: null,             // the cid whose detection run has finished (late AI answers are applied directly)
+    subtitles: null,           // {cid, lines, lan} — prepared AI subtitle lines of the current video (skip button)
     heat: null,                // parsed 高能进度条 curve for the current video {step, values, events}
     heatAnalysis: null,        // BAS.detectHeat.analyse(heat)
     lastDanmaku: null,         // {cid, list} — kept so keyword edits can re-run detection without re-downloading
@@ -116,17 +111,6 @@
       stats: Object.assign({}, state.stats, { cuts: state.media ? state.media.cuts.length : 0, av: { probed: state.av.size, busy: state.avBusy != null, bytes: state.avBytes } }),
       currentTime,
       duration: duration || (state.video && state.video.duration) || null,
-      llm: (() => {
-        const mine = state.llm && state.video && state.llm.cid === String(state.video.cid) ? state.llm : null;
-        const st = state.stats.llm;
-        return {
-          configured: !!(state.llmStatus && state.llmStatus.configured), label: state.llmStatus && state.llmStatus.label,
-          off: state.status === 'disabled' || state.status === 'ignored' || settings().enabled === false,
-          missingPermission: !!(state.llmStatus && state.llmStatus.missingPermission), paused: settings().useLlm === false,
-          status: mine ? mine.status : st || null,
-          note: mine ? mine.note : st === 'ok' ? `${state.candidates.filter((c) => c.source === 'llm').length} 段·缓存` : st === 'none' ? '视频没有 AI 字幕' : st === 'error' ? '失败' : '',
-        };
-      })(),
     };
   }
   /** Cached candidates do not need the (large) evidence arrays. */
@@ -203,11 +187,19 @@
     if (!BAS.ui || !ensureUi()) return;
     try {
       BAS.ui.showSkipButton({
-        label: seg.offerOnly ? '弹幕建议跳过' : '跳过广告',
+        label: seg.offerOnly ? offerLabel(seg) : '跳过广告',
         sub: `${fmtTime(seg.start)} → ${fmtTime(seg.end)}`,
         onClick: () => { try { state.skipper && state.skipper.skipNow(seg); } catch (e) { /* ignore */ } },
       });
     } catch (e) { /* ignore */ }
+  }
+  /** Who suggests an offered segment: the button names the source. */
+  function offerLabel(seg) {
+    const src = Array.isArray(seg.sources) && seg.sources.length ? seg.sources : [seg.source];
+    if (src.includes('danmaku')) return '弹幕建议跳过';
+    if (src.includes('subtitle')) return '字幕建议跳过';
+    if (src.includes('crowd')) return '众包建议跳过';
+    return '建议跳过';
   }
   function onLeave() { try { BAS.ui && BAS.ui.hideSkipButton(); } catch (e) { /* ignore */ } }
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -230,8 +222,9 @@
     try { v.addEventListener('seeking', onSeeking); } catch (e) { /* ignore */ }
     try {
       let list = state.lastDanmaku && state.lastDanmaku.cid === info.cid ? state.lastDanmaku.list : null;
-      let subs = state.subtitles && state.subtitles.cid === String(info.cid) ? state.subtitles.lines : null;
-      const wantSubs = !subs && settings().useSubtitles !== false && !!BAS.detectSubtitles;
+      const subsOn = settings().useSubtitles !== false;
+      let subs = subsOn && state.subtitles && state.subtitles.cid === String(info.cid) ? state.subtitles.lines : null;
+      const wantSubs = !subs && subsOn && !!BAS.detectSubtitles;
       if (!list || wantSubs) {
         // results came from the cache: load what is missing, but never hold the press up for long
         const wait = BAS.ui ? BAS.ui.showToast({ text: '正在查找广告结尾…', durationMs: SKIP_WAIT_MS + 1000, force: true }) : null;
@@ -248,12 +241,6 @@
         await Promise.all(tasks);
         if (wait) wait.close();
         if (!list) list = [];
-        if (!stillHere()) return null;
-      }
-      if (llmActive() && state.llm && state.llm.cid === String(info.cid) && state.llm.status === 'running') {
-        const wait = BAS.ui ? BAS.ui.showToast({ text: 'AI 正在分析字幕…', durationMs: SKIP_LLM_WAIT_MS + 1000, force: true }) : null;
-        await Promise.race([state.llm.promise, new Promise((res) => setTimeout(res, SKIP_LLM_WAIT_MS))]);
-        if (wait) wait.close();
         if (!stillHere()) return null;
       }
       const dur = info.duration || (isFinite(v.duration) ? v.duration : 0);
@@ -311,12 +298,12 @@
       try { v.removeEventListener('seeking', onSeeking); } catch (e) { /* ignore */ }
     }
   }
-  /** Everything known about this video for the skip button (crowd marks only while that source is enabled). */
+  /** Everything known about this video for the skip button (crowd marks and subtitle reads only while enabled). */
   const knownSpans = () => {
-    const crowdOn = settings().useCrowd !== false, aiOn = llmActive();
+    const s = settings();
+    const only = (src) => (c) => c.source === src && (c.sources || [src]).every((x) => x === src);
     return [].concat(state.segments, state.dropped, state.candidates)
-      .filter((c) => crowdOn || (c.source !== 'crowd' && !(c.sources || []).every((x) => x === 'crowd')))
-      .filter((c) => aiOn || (c.source !== 'llm' && !(c.sources || []).every((x) => x === 'llm')));
+      .filter((c) => (s.useCrowd !== false || !only('crowd')(c)) && (s.useSubtitles !== false || !only('subtitle')(c)));
   };
   const avAvailable = () => { const s = settings(); return s.enabled && s.useAvProbe !== false && !!BAS.mediaProbe && !!BAS.avSegment && typeof fetch === 'function'; };
   const skipHereMediaAvailable = () => { const s = settings(); return s.enabled && s.skipHereMedia !== false && !!BAS.mediaProbe && !!BAS.avSegment && typeof fetch === 'function'; };
@@ -396,7 +383,7 @@
     try {
       const media = s.useMedia ? state.media : null;
       const r = BAS.buildSegments({
-        candidates: aiFilter(state.candidates), duration: dur, boundaries: state.boundaries, heatAnalysis: state.heatAnalysis,
+        candidates: state.candidates, duration: dur, boundaries: state.boundaries, heatAnalysis: state.heatAnalysis,
         av: state.av, media, overrides: state.overrides, settings: s,
       });
       const segs = r.segments, dropped = r.dropped;
@@ -516,7 +503,7 @@
    */
   async function loadSubtitles(info, signal) {
     const cid = String(info.cid);
-    if (state.subtitles && state.subtitles.cid === cid) return { lines: state.subtitles.lines, lan: state.subtitles.lan, body: state.subtitles.body, note: '已读取' };
+    if (state.subtitles && state.subtitles.cid === cid) return { lines: state.subtitles.lines, lan: state.subtitles.lan, note: '已读取' };
     let entry = state.bridgeSubs.get(cid);
     for (let waited = 0; !entry && waited < SUB_WAIT_MS; waited += 250) {
       await new Promise((r) => setTimeout(r, 250));
@@ -524,142 +511,28 @@
       entry = state.bridgeSubs.get(cid);
     }
     // an AI subtitle file is named after its video (/bfs/ai_subtitle/prod/<aid><cid><hash>): a listing that names
-    // another video's file — from an unsigned request, or forged on the page — is not used
+    // another video's file (an unsigned request can get one) is not used
     const ownFile = (p) => !p || !/ai_subtitle/.test(p.url) || !info.aid || p.url.includes(String(info.aid) + String(info.cid));
     let pick = entry ? BAS.api.pickSubtitle(entry.list) : null;
     if (!ownFile(pick)) pick = null;
     let signed = !!(entry && entry.signed), via = 'player';
     if (!pick && BAS.api.getDmViewSubtitles && info.aid) {
-      // signed out (the player lists AI subtitles only to signed-in viewers), or its request was missed
+      // signed out (the player lists AI subtitles only to signed-in viewers), or its request was missed;
       // a failed lookup is a failure (retried next time), not "this video has no subtitles"
       const list = await BAS.api.getDmViewSubtitles(info.aid, info.cid, { signal });
       pick = BAS.api.pickSubtitle(list);
       if (!ownFile(pick)) pick = null;
       signed = true; via = 'dm/view';
     }
-    if (!pick) return { lines: null, note: entry && entry.list.length ? '无中英文字幕' : '视频没有 AI 字幕' };
+    if (!pick) return { lines: null, note: entry && entry.list.length ? '没有中文字幕' : '视频没有 AI 字幕' };
     const body = await BAS.api.getSubtitleBody(pick.url, { signal });
     const dur = +info.duration || 0;
     const last = body.length ? body[body.length - 1].to : 0;
     const slack = signed ? Math.max(60, 0.25 * dur) : Math.max(30, 0.1 * dur);
     if (!body.length || (dur > 0 && (last > dur + 5 || last < dur - slack))) return { lines: null, note: `字幕与视频时长不符（${Math.round(last)} / ${Math.round(dur)} 秒），已忽略` };
-    const lines = BAS.detectSubtitles.prepare(body);
-    if (state.video && String(state.video.cid) === cid) state.subtitles = { cid, lines, lan: pick.lan, body };
-    return { lines, lan: pick.lan + (via === 'dm/view' ? '*' : ''), body, note: '' };
-  }
-
-  // ---------------------------------------------------------------- AI transcript check (29-detect-llm.js)
-  function bg(msg) {
-    return new Promise((res) => { try { chrome.runtime.sendMessage(msg, (x) => { void chrome.runtime.lastError; res(x || null); }); } catch (e) { res(null); } });
-  }
-  async function refreshLlmStatus() {
-    if (!chromeOk()) { state.llmStatus = { configured: false }; return state.llmStatus; }
-    const r = await bg({ type: 'BAS_LLM_STATUS' });
-    state.llmStatus = r && r.ok ? { configured: !!r.configured, label: r.label, model: r.model, missingPermission: !!r.missingPermission } : { configured: false };
-    return state.llmStatus;
-  }
-  /** A model is set up and the viewer has it on. */
-  const llmActive = () => settings().useLlm !== false && !!BAS.detectLlm && !!(state.llmStatus && state.llmStatus.configured);
-  /** … and this video may be sent to it (extension on, uploader not ignored). */
-  const llmWanted = () => llmActive() && settings().enabled !== false && state.status !== 'ignored' && state.status !== 'disabled';
-  /**
-   * Ask the model about this video's transcript (cached per cid + transcript + prompt version + model). Candidates are
-   * merged into the run when it is still current. Never throws.
-   */
-  function runLlm(info, body, title) {
-    const cid = String(info.cid);
-    if (!llmWanted()) return Promise.resolve(null);
-    if (state.llm && state.llm.cid === cid && (state.llm.status === 'running' || state.llm.status === 'ok')) return state.llm.promise;
-    const rec = { cid, status: 'running', candidates: [], note: '分析中' };
-    rec.promise = (async () => {
-      const L = BAS.detectLlm;
-      const model = (state.llmStatus && state.llmStatus.model) || '';
-      const req = L.buildRequest({ title, duration: info.duration, lines: body, model });
-      const fp = L.fingerprint(body);
-      let cached = null;
-      try { cached = await BAS.storage.getLlm(cid); } catch (e) { cached = null; }
-      const same = cached && cached.fp === fp && cached.v === L.PROMPT_VERSION && cached.model === model;
-      // a reply the model could not get right is not paid for again for a day
-      if (same && cached.error && Date.now() - (cached.ts || 0) < (cached.soft ? 3600e3 : LLM_NEGATIVE_TTL_MS)) { rec.status = 'error'; rec.note = '失败（已缓存）：' + cached.error; return rec; }
-      let reply = null, fromCache = false;
-      if (same && cached.reply && !cached.error) { reply = cached.reply; fromCache = true; }
-      else {
-        const t0 = Date.now();
-        const r = await bg({ type: 'BAS_LLM', request: { system: req.system, user: req.user, schema: req.schema } });
-        if (!r || !r.ok) {
-          rec.status = 'error'; rec.note = '失败：' + ((r && r.error) || '后台没有响应'); BAS.log('AI 字幕分析' + rec.note);
-          // a timeout was probably billed anyway: do not pay for the same transcript again for an hour
-          if (r && r.timedOut) BAS.storage.setLlm(cid, { fp, v: L.PROMPT_VERSION, model, error: r.error, soft: true }).catch(() => {});
-          return rec;
-        }
-        reply = r.text;
-        rec.ms = Date.now() - t0;
-      }
-      const parsed = L.parseReply(reply, req, settings());
-      if (parsed.error) {
-        rec.status = 'error'; rec.note = '失败：' + parsed.error; BAS.log('AI 字幕分析' + rec.note);
-        if (!fromCache) BAS.storage.setLlm(cid, { fp, v: L.PROMPT_VERSION, model, error: parsed.error }).catch(() => {});
-        return rec;
-      }
-      // second question for the reads the model hedged on (cached with the first answer)
-      const verify = Object.assign({}, fromCache && cached.verify ? cached.verify : {});
-      let cands = parsed.candidates, asked = 0, changed = 0;
-      for (const c of parsed.candidates.filter((x) => x.evidence.llm.uncertain).slice(0, L.CONST.MAX_VERIFY)) {
-        const vreq = L.buildVerifyRequest(req, c, title);
-        const vkey = c.evidence.llm.lines.join('-');
-        if (verify[vkey] == null) {
-          if (!llmWanted()) break;            // paused or switched off meanwhile: no more paid questions
-          const r = await bg({ type: 'BAS_LLM', request: { system: vreq.system, user: vreq.user, schema: vreq.schema } });
-          if (!r || !r.ok) continue;       // keep the offer
-          verify[vkey] = String(r.text).slice(0, 4000);
-          asked++;
-        }
-        const nc = L.parseVerifyReply(verify[vkey], vreq, req);
-        if (nc !== c) { changed++; cands = cands.filter((x) => x !== c).concat(nc ? [nc] : []); }
-      }
-      cands.sort((x, y) => x.start - y.start);
-      L.capAuto(cands, info.duration);       // confirmed reads count toward the video-level caps too
-      rec.coveredTo = req.lines.length ? req.lines[req.lines.length - 1].b : 0;   // the model saw this far (long transcripts are cut)
-      if (!fromCache || asked) BAS.storage.setLlm(cid, { fp, v: L.PROMPT_VERSION, model, reply: String(reply).slice(0, 20000), verify }).catch(() => {});
-      rec.status = 'ok'; rec.candidates = cands;
-      if (changed) rec.verified = changed;
-      rec.note = `${cands.length} 段` + (changed ? `（复核 ${changed} 段）` : '') + (parsed.rejected.length ? `（另有 ${parsed.rejected.length} 段未采用）` : '') + (fromCache && !asked ? '·缓存' : rec.ms ? `·${(rec.ms / 1000).toFixed(1)} 秒` : '');
-      return rec;
-    })().catch((e) => { rec.status = 'error'; rec.note = '失败：' + ((e && e.message) || e); return rec; }).then((r) => {
-      if (state.llm !== rec || !state.video || String(state.video.cid) !== cid) return r;
-      if (rec.status !== 'ok') state.stats.llm = 'error';      // 'ok' is set by mergeLlm, together with the reads
-      // the run for this video is over (whatever its status) and the extension still on: apply now; otherwise detect()
-      // picks it up
-      if (state.doneCid === cid && settings().enabled !== false && state.status !== 'disabled' && state.status !== 'ignored') {
-        mergeLlm();
-        applyFusion('llm');
-        logSummary(state.video, [`AI ${rec.note}`]);
-        if (state.cacheable) { state.cacheTs = state.cacheTs || Date.now(); cacheResults(state.video); }
-      }
-      return r;
-    });
-    state.llm = rec;
-    return rec.promise;
-  }
-  /** Add the model's reads (fusion decides what they replace, see aiFilter). */
-  function mergeLlm() {
-    const r = state.llm;
-    if (!r || !state.video || r.cid !== String(state.video.cid) || r.status !== 'ok' || !llmActive()) return;
-    state.candidates = state.candidates.filter((c) => c.source !== 'llm').concat(r.candidates);
-    state.stats.llm = 'ok';
-  }
-  /**
-   * Candidates fusion should see: the model's reads only while a model is set up and enabled; the word-list reads of
-   * the same transcript only when the model has not answered for it (it read the same text, better).
-   */
-  function aiFilter(cands) {
-    const useAi = llmActive();
-    const mine = state.llm && state.video && state.llm.cid === String(state.video.cid) ? state.llm : null;
-    // the model answered for this transcript: this run's answer, or (results from the cache) the cached one
-    const aiDone = useAi && (mine ? mine.status === 'ok' : state.stats.llm === 'ok');
-    const coveredTo = mine && mine.coveredTo > 0 ? mine.coveredTo : Infinity;
-    // word-list reads stay where the model did not read (past the cut of a very long transcript)
-    return cands.filter((c) => (c.source === 'llm' ? useAi : c.source === 'subtitle' ? !aiDone || c.start > coveredTo : true));
+    const lines = BAS.detectSubtitles.prepare(body, dur);
+    if (state.video && String(state.video.cid) === cid) state.subtitles = { cid, lines, lan: pick.lan };
+    return { lines, lan: pick.lan + (via === 'dm/view' ? '*' : ''), note: '' };
   }
 
   async function detect(info, { force } = {}) {
@@ -675,8 +548,6 @@
     state.stats = { danmakuCount: 0, viewPoints: 0, cuts: 0, missingSegments: [] };
     state.heat = null; state.heatAnalysis = null;
     if (state.subtitles && state.subtitles.cid !== String(info.cid)) state.subtitles = null;
-    if (state.llm && state.llm.cid !== String(info.cid)) state.llm = null;
-    state.doneCid = null;
     state.av = new Map(); state.avWanted = []; state.avTried = new Set(); state.avErrors = 0; state.avBytes = 0;
     state.cacheable = false; state.cacheTs = 0;
     clearUi();
@@ -706,10 +577,7 @@
         state.cacheable = true; state.cacheTs = cached.ts || Date.now();
         state.status = 'ready';
         applyFusion('cache');
-        // fresh enough — unless a model is set up and these results were made before it was (stats.llm never tried)
-        const tried = cached.stats && (cached.stats.llm === 'ok' || cached.stats.llm === 'none');
-        if (Date.now() - (cached.ts || 0) < CACHE_REFRESH_MS && !(llmWanted() && !tried)) { state.doneCid = String(info.cid); return; }
-        if (cached.stats && cached.stats.llm !== 'ok') delete state.stats.llm;
+        if (Date.now() - (cached.ts || 0) < CACHE_REFRESH_MS) return; // fresh enough
       }
     }
 
@@ -757,12 +625,9 @@
     const cachedCrowd = () => state.candidates.filter((c) => c.source === 'crowd');
 
     const subtitleP = (async () => {
-      const words = !!BAS.detectSubtitles && s.useSubtitles !== false;
-      if (!words && !llmWanted()) return { candidates: [], note: '关闭' };
+      if (!BAS.detectSubtitles || s.useSubtitles === false) return { candidates: [], note: '关闭' };
       const got = await loadSubtitles(info, ac.signal);
-      if (!got.lines) { if (llmWanted()) state.stats.llm = 'none'; return { candidates: [], note: got.note }; }
-      if (llmWanted() && got.body) runLlm(info, got.body, info.title || (state.bridgeState && state.bridgeState.title) || '');
-      if (!words) return { candidates: [], note: `${got.lan} ${got.lines.length} 句` };
+      if (!got.lines) return { candidates: [], note: got.note };
       const r = BAS.detectSubtitles(got.lines, info.duration, s);
       return { candidates: r.candidates, note: `${got.lan} ${r.lines} 句→${r.candidates.length}` };
     })().catch((e) => {
@@ -770,17 +635,14 @@
       BAS.log('字幕读取失败：' + ((e && e.message) || e));
       return { candidates: [], note: '读取失败', failed: true };
     });
-    // a failed transcript download during the hourly refresh keeps what the cache had from it (word list and model)
-    const cachedSubtitle = () => state.candidates.filter((c) => c.source === 'subtitle' || c.source === 'llm');
+    const cachedSubtitle = () => state.candidates.filter((c) => c.source === 'subtitle');
 
     const [ch, dm, heat, crowd, sub] = await Promise.all([chaptersP, danmakuP, heatP, crowdP, subtitleP]);
     if (!alive()) { if (!settings().enabled && runId === state.runId) { state.status = 'disabled'; clearUi(); sendBadge(0); } return; }
 
     const crowdCands = crowd.failed ? cachedCrowd() : crowd.candidates;
     const subCands = sub.failed ? cachedSubtitle() : sub.candidates;
-    const prevLlm = state.llm && state.llm.cid === String(info.cid) && state.llm.status === 'ok' ? [] : state.candidates.filter((c) => c.source === 'llm' && !subCands.includes(c));
-    state.candidates = [].concat(ch.candidates, crowdCands, subCands, dm.candidates, prevLlm);
-    mergeLlm();
+    state.candidates = [].concat(ch.candidates, crowdCands, subCands, dm.candidates);
     state.stats.crowd = crowdCands.length;
     state.stats.subtitle = subCands.length;
     state.boundaries = ch.boundaries; state.viewPoints = ch.viewPoints || [];
@@ -796,7 +658,6 @@
       `章节 ${ch.candidates.length}`,
       `众包 ${crowd.failed ? '查询失败' : crowdCands.length}`,
       `字幕 ${sub.note}`,
-      `AI ${!llmWanted() ? (state.llmStatus && state.llmStatus.missingPermission ? '缺少权限' : '未设置') : state.llm && state.llm.cid === String(info.cid) ? state.llm.note : '无字幕'}`,
       `弹幕 ${dm.count} 条→${dm.candidates.length}`,
       `热度 ${state.heat ? '有' : '无'}`,
     ]);
@@ -804,7 +665,6 @@
     // a failed crowd lookup is not "no marks": leave it out of the cache so the next visit asks again
     state.cacheable = !dm.error && !ch.error && !(dm.missing && dm.missing.length) && !(crowd.failed && !crowdCands.length) && !(sub.failed && !subCands.length);
     if (state.cacheable) { state.cacheTs = Date.now(); cacheResults(info); }
-    state.doneCid = String(info.cid);
   }
 
   /** Keyword edits: re-run detectors on the danmaku already in memory instead of downloading everything again. */
@@ -818,7 +678,7 @@
     try {
       const ch = BAS.detectChapters ? BAS.detectChapters(state.viewPoints, info.duration, s) : { candidates: [], boundaries: state.boundaries };
       const dm = s.useDanmaku && mem ? BAS.detectDanmaku(mem, info.duration, s) : { candidates: [] };
-      const kept = state.candidates.filter((c) => c.source === 'crowd' || c.source === 'subtitle' || c.source === 'llm');
+      const kept = state.candidates.filter((c) => c.source === 'crowd' || c.source === 'subtitle');
       state.candidates = [].concat(ch.candidates || [], kept, dm.candidates || []);
       state.boundaries = ch.boundaries || state.boundaries;
       applyFusion('keywords');
@@ -1033,32 +893,10 @@
     if (['extraStartKeywords', 'extraEndKeywords', 'useChapters'].some(changed)) { redetectDebounced(); return; }
     if (changed('useHeat') && next.useHeat && !state.heat && state.video) { detect(state.video, { force: true }).catch(() => {}); return; }
     if (changed('useCrowd') && next.useCrowd && state.video && !state.candidates.some((c) => c.source === 'crowd')) { detect(state.video, { force: true }).catch(() => {}); return; }
-    if (changed('useLlm') && state.video) {
-      if (next.useLlm !== false && llmWanted() && !(state.llm && state.llm.cid === String(state.video.cid))) { detect(state.video, { force: true }).catch(() => {}); return; }
-      mergeLlm();
-      applyFusion('settings');      // aiFilter: the model's reads on/off, the word-list reads the other way round
-    }
-    if (changed('useSubtitles') && state.video) { detect(state.video, { force: true }).catch(() => {}); return; }
-    if (['minConfidence', 'showMarkers', 'mode', 'useMedia', 'useAudio', 'useHeat', 'useAvProbe', 'useCrowd'].some(changed)) applyFusion('settings');
+    if (changed('useSubtitles') && next.useSubtitles !== false && state.video && !state.candidates.some((c) => c.source === 'subtitle')) { detect(state.video, { force: true }).catch(() => {}); return; }
+    if (['minConfidence', 'showMarkers', 'mode', 'useMedia', 'useAudio', 'useHeat', 'useAvProbe', 'useCrowd', 'useSubtitles'].some(changed)) applyFusion('settings');
   }
   function onStorageChanged(changes, area) {
-    if (area === 'local' && Object.prototype.hasOwnProperty.call(changes, 'llmConfig')) {
-      // a model was set up (or removed) in the options: apply it to the video that is open
-      refreshLlmStatus().then(() => {
-        const v = state.video;
-        if (!v) return;
-        state.llm = null;
-        if (llmWanted()) {
-          if (state.subtitles && state.subtitles.cid === String(v.cid) && state.subtitles.body) runLlm(v, state.subtitles.body, v.title || '');
-          else detect(v, { force: true }).catch(() => {});      // results came from the cache: no transcript in memory
-        } else {
-          // removed: its reads go, the word-list reads of the transcript come back
-          state.candidates = state.candidates.filter((c) => c.source !== 'llm');
-          delete state.stats.llm;
-          if (settings().enabled !== false && state.status !== 'disabled' && state.status !== 'ignored') applyFusion('llm');
-        }
-      }).catch(() => {});
-    }
     if (area !== 'local' || !state.video) return;
     const key = BAS.storage.overrideKey(state.video.bvid, state.video.cid);
     if (Object.prototype.hasOwnProperty.call(changes, key)) reloadOverrides();
@@ -1077,7 +915,7 @@
     const problems = [];
     if (!r || !r.version) problems.push('后台服务没有响应');
     else if (r.version !== BAS.VERSION) problems.push(`文件已更新到 ${BAS.VERSION}，但 Chrome 还在运行 ${r.version}`);
-    const missing = ['detectCrowd', 'buildSegments', 'detectHeat', 'findAdEnd', 'detectSubtitles'].filter((k) => !BAS[k]);
+    const missing = ['detectCrowd', 'buildSegments', 'detectHeat', 'findAdEnd', 'detectSubtitles', 'subtitleModel'].filter((k) => !BAS[k]);
     if (missing.length) problems.push('缺少模块 ' + missing.join('、'));
     if (r && r.crowdPermission === false && settings().useCrowd !== false) problems.push('没有访问 bsbsb.top（众包片段库）的权限');
     state.selfCheck = problems;
@@ -1099,7 +937,6 @@
   async function boot() {
     try { await BAS.storage.loadSettings(); } catch (e) { BAS.warn('settings load failed', e); }
     setTimeout(selfCheck, 1500);
-    try { await refreshLlmStatus(); } catch (e) { /* ignore */ }
     prevSettingsJson = JSON.stringify(settings());
     try { BAS.storage.onSettingsChanged((s) => { BAS.state.settings = s; onSettingsChanged(s); }); } catch (e) { /* ignore */ }
     try { BAS.storage.onChanged && BAS.storage.onChanged(onStorageChanged); } catch (e) { /* ignore */ }

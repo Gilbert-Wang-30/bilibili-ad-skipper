@@ -77,11 +77,6 @@ textarea:focus, select:focus, input:focus { outline: 2px solid var(--accent); ou
 }
 .btn:hover:not(:disabled) { background: var(--btn-hover); }
 .btn:disabled { opacity: .5; cursor: default; }
-.wide-input { flex: 1 1 260px; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; }
-.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-.card.ai { border-color: var(--accent); }
-.ok-text { color: #389e0d; }
-.err-text { color: var(--danger); }
 .btn.danger { color: var(--danger); border-color: var(--line); background: transparent; }
 .btn.danger:hover:not(:disabled) { background: rgba(212, 56, 13, .08); }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
