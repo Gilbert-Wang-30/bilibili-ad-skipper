@@ -48,6 +48,9 @@
     bridgeHeat: new Map(),     // cid(string) -> parsed heat curve captured from the player's own request
     bridgeSubs: new Map(),     // cid(string) -> {list:[{lan,url}], signed} subtitle files listed in the player's own request
     subtitles: null,           // {cid, lines, lan} — prepared AI subtitle lines of the current video (skip button)
+    subMedia: null,            // {cid, media} — the danmaku / heat the subtitle model read (the skip button re-uses it)
+    binsCid: null,             // cid whose detection ran the danmaku / heat bin model (keyword edits re-use the decision)
+    binsFor: null,             // cid that decision was made for
     heat: null,                // parsed 高能进度条 curve for the current video {step, values, events}
     heatAnalysis: null,        // BAS.detectHeat.analyse(heat)
     lastDanmaku: null,         // {cid, list} — kept so keyword edits can re-run detection without re-downloading
@@ -118,7 +121,7 @@
     const o = Object.assign({}, c);
     const ev = c.evidence || {};
     o.evidence = { targetsAgree: ev.targetsAgree, adVocab: ev.adVocab, strongEnd: ev.strongEnd, mediumEnd: ev.mediumEnd, endZone: ev.endZone,
-      nTargets: Array.isArray(ev.targets) ? ev.targets.length : ev.nTargets };
+      nTargets: Array.isArray(ev.targets) ? ev.targets.length : ev.nTargets, bins: ev.bins, subtitle: ev.subtitle };
     return o;
   };
 
@@ -246,7 +249,7 @@
       const dur = info.duration || (isFinite(v.duration) ? v.duration : 0);
       let r = BAS.findAdEnd({
         t, duration: dur, danmaku: list, heat: state.heatAnalysis,
-        boundaries: state.boundaries, candidates: knownSpans(), subtitles: subs,
+        boundaries: state.boundaries, candidates: knownSpans(), subtitles: subs, media: subMediaOf(info),
       });
       if (!r) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
       // Unless the press is inside a segment we already know, measure the end from the video's own audio/picture:
@@ -268,7 +271,7 @@
       if (r.end <= now + 1) {
         // a real end estimate that is already behind us means the ad is over; only a blind step is recomputed
         if (r.source !== 'fallback') { if (BAS.ui) BAS.ui.showToast({ text: '广告已经结束', force: true }); return null; }
-        const again = BAS.findAdEnd({ t: now, duration: dur, danmaku: list, heat: state.heatAnalysis, boundaries: state.boundaries, candidates: knownSpans(), subtitles: subs });
+        const again = BAS.findAdEnd({ t: now, duration: dur, danmaku: list, heat: state.heatAnalysis, boundaries: state.boundaries, candidates: knownSpans(), subtitles: subs, media: subMediaOf(info) });
         if (!again) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
         r = Object.assign({}, again, { start: Math.min(again.start, r.start) });
       }
@@ -489,7 +492,7 @@
   }
   function cacheResults(info) {
     BAS.storage.setCache(info.cid, {
-      version: BAS.VERSION, ts: state.cacheTs || Date.now(),
+      version: BAS.VERSION, ts: state.cacheTs || Date.now(), flags: sourceFlags(settings()), binsCid: state.binsCid,
       candidates: state.candidates.map(slimCandidate), boundaries: state.boundaries, viewPoints: state.viewPoints, stats: state.stats,
       heat: state.heat,
       av: avForCache(),
@@ -548,6 +551,8 @@
     state.stats = { danmakuCount: 0, viewPoints: 0, cuts: 0, missingSegments: [] };
     state.heat = null; state.heatAnalysis = null;
     if (state.subtitles && state.subtitles.cid !== String(info.cid)) state.subtitles = null;
+    if (state.subMedia && state.subMedia.cid !== String(info.cid)) state.subMedia = null;
+    if (state.binsFor !== String(info.cid)) { state.binsFor = null; state.binsCid = null; }
     state.av = new Map(); state.avWanted = []; state.avTried = new Set(); state.avErrors = 0; state.avBytes = 0;
     state.cacheable = false; state.cacheTs = 0;
     clearUi();
@@ -569,7 +574,9 @@
       let cached = null;
       try { cached = await BAS.storage.getCache(info.cid); } catch (e) { cached = null; }
       if (!alive()) return;
-      if (cached && cached.version === BAS.VERSION && Date.now() - (cached.ts || 0) < CACHE_TTL_MS && Array.isArray(cached.candidates)) {
+      // results found with other sources switched on or off are stale
+      if (cached && cached.version === BAS.VERSION && cached.flags === sourceFlags(s) && Date.now() - (cached.ts || 0) < CACHE_TTL_MS && Array.isArray(cached.candidates)) {
+        state.binsCid = cached.binsCid || null; state.binsFor = String(info.cid);
         state.candidates = cached.candidates; state.boundaries = cached.boundaries || []; state.viewPoints = cached.viewPoints || [];
         if (cached.heat && BAS.detectHeat) { state.heat = cached.heat; state.heatAnalysis = BAS.detectHeat.analyse(cached.heat, info.duration); }
         state.stats = Object.assign(state.stats, cached.stats || {});
@@ -594,7 +601,7 @@
     })().catch((e) => { BAS.warn('chapters failed', e); return { candidates: [], boundaries: [], viewPoints: [], error: e }; });
 
     const danmakuP = (async () => {
-      if (!s.useDanmaku) return { candidates: [], count: 0, missing: [] };
+      if (!s.useDanmaku) return { candidates: [], count: 0, missing: [], list: null };
       const preloaded = state.preloadedDm.get(String(info.cid));
       const list = await BAS.api.getDanmaku(info.aid, info.cid, info.duration, { preloaded, signal: ac.signal });
       state.preloadedDm.delete(String(info.cid));   // decoded copies are no longer needed
@@ -606,8 +613,8 @@
       const t0 = performance.now();
       const r = BAS.detectDanmaku(list, info.duration, s);
       BAS.debug(`detectDanmaku ${list.length} items in ${(performance.now() - t0).toFixed(1)} ms`, r);
-      return { candidates: r.candidates || [], count: list.length, missing };
-    })().catch((e) => { if (e && e.name === 'AbortError') return { aborted: true, candidates: [], count: 0, missing: [] }; BAS.warn('danmaku failed', e); return { candidates: [], count: 0, missing: [], error: e }; });
+      return { candidates: r.candidates || [], count: list.length, missing, list };
+    })().catch((e) => { if (e && e.name === 'AbortError') return { aborted: true, candidates: [], count: 0, missing: [], list: null }; BAS.warn('danmaku failed', e); return { candidates: [], count: 0, missing: [], error: e, list: null }; });
 
     const heatP = (async () => {
       if (!BAS.detectHeat || s.useHeat === false) return null;
@@ -627,9 +634,18 @@
     const subtitleP = (async () => {
       if (!BAS.detectSubtitles || s.useSubtitles === false) return { candidates: [], note: '关闭' };
       const got = await loadSubtitles(info, ac.signal);
-      if (!got.lines) return { candidates: [], note: got.note };
-      const r = BAS.detectSubtitles(got.lines, info.duration, s);
-      return { candidates: r.candidates, note: `${got.lan} ${r.lines} 句→${r.candidates.length}` };
+      if (!got.lines) return { candidates: [], note: got.note, noLines: true };
+      // the line model also reads the danmaku and the heat curve, which load alongside
+      const [dmR, heatR] = await Promise.all([danmakuP, heatP]);
+      let media = null;
+      if ((dmR.list || heatR) && BAS.mediaFeatures) {
+        media = { danmaku: dmR.list || [], heat: heatR || null };
+        media.index = BAS.mediaFeatures.prepareMedia(media.danmaku, media.heat, info.duration, s);
+        state.subMedia = { cid: String(info.cid), media };
+        await yieldTask();   // a long video's danmaku index, then its scoring, as separate tasks
+      }
+      const r = BAS.detectSubtitles(got.lines, info.duration, s, media);
+      return { candidates: r.candidates, scored: true, note: `${got.lan} ${r.lines} 句→${r.candidates.length}${media ? '' : '（无弹幕）'}` };
     })().catch((e) => {
       if (e && e.name === 'AbortError') return { candidates: [], note: '已取消', failed: true };
       BAS.log('字幕读取失败：' + ((e && e.message) || e));
@@ -642,7 +658,15 @@
 
     const crowdCands = crowd.failed ? cachedCrowd() : crowd.candidates;
     const subCands = sub.failed ? cachedSubtitle() : sub.candidates;
-    state.candidates = [].concat(ch.candidates, crowdCands, subCands, dm.candidates);
+    // no subtitles scored (none, turned off, or the lookup failed with nothing cached): the danmaku / heat model finds
+    // the ads the hand-written danmaku rules miss. Decided here once; keyword edits re-use the decision.
+    // a failed subtitle lookup keeps the decision of the last good run of this video (if there was one)
+    const decided = state.binsFor === String(info.cid);
+    const wantBins = !!dm.list && (sub.failed && decided ? state.binsCid === String(info.cid) : !sub.scored && !(sub.failed && subCands.length));
+    if (wantBins) { await yieldTask(); if (!alive()) return; }
+    if (!sub.failed || !decided) { state.binsFor = String(info.cid); state.binsCid = wantBins ? String(info.cid) : null; }
+    const binCands = wantBins ? binCandidates(dm.list, heat, info.duration, s) : [];
+    state.candidates = [].concat(ch.candidates, crowdCands, subCands, dm.candidates, binCands);
     state.stats.crowd = crowdCands.length;
     state.stats.subtitle = subCands.length;
     state.boundaries = ch.boundaries; state.viewPoints = ch.viewPoints || [];
@@ -658,13 +682,25 @@
       `章节 ${ch.candidates.length}`,
       `众包 ${crowd.failed ? '查询失败' : crowdCands.length}`,
       `字幕 ${sub.note}`,
-      `弹幕 ${dm.count} 条→${dm.candidates.length}`,
+      `弹幕 ${dm.count} 条→${dm.candidates.length}${binCands.length ? ' + 模型 ' + binCands.length : ''}`,
       `热度 ${state.heat ? '有' : '无'}`,
     ]);
     // Only complete results are cached; failures and partial danmaku are retried on the next visit.
     // a failed crowd lookup is not "no marks": leave it out of the cache so the next visit asks again
     state.cacheable = !dm.error && !ch.error && !(dm.missing && dm.missing.length) && !(crowd.failed && !crowdCands.length) && !(sub.failed && !subCands.length);
     if (state.cacheable) { state.cacheTs = Date.now(); cacheResults(info); }
+  }
+
+  /** The media object the subtitle model read for this video (same object each press, so its cached run is re-used). */
+  const subMediaOf = (info) => (state.subMedia && state.subMedia.cid === String(info.cid) ? state.subMedia.media : undefined);
+  /** Lets the page run between long synchronous steps. */
+  const yieldTask = () => new Promise((r) => setTimeout(r, 0));
+  /** The source switches a cached result depends on. */
+  const sourceFlags = (s) => ['useChapters', 'useDanmaku', 'useHeat', 'useCrowd', 'useSubtitles'].map((k) => (s[k] === false ? 0 : 1)).join('');
+  /** The danmaku / heat bin model's candidates (29-media-features.js), for a video without subtitles. */
+  function binCandidates(list, heat, duration, s) {
+    if (!BAS.mediaFeatures || !BAS.mediaFeatures.detectBins || s.useDanmaku === false) return [];
+    try { return BAS.mediaFeatures.detectBins(list, s.useHeat === false ? null : heat, duration, s, { hasBody: false }).candidates || []; } catch (e) { BAS.warn('bin model failed', e); return []; }
   }
 
   /** Keyword edits: re-run detectors on the danmaku already in memory instead of downloading everything again. */
@@ -679,10 +715,11 @@
       const ch = BAS.detectChapters ? BAS.detectChapters(state.viewPoints, info.duration, s) : { candidates: [], boundaries: state.boundaries };
       const dm = s.useDanmaku && mem ? BAS.detectDanmaku(mem, info.duration, s) : { candidates: [] };
       const kept = state.candidates.filter((c) => c.source === 'crowd' || c.source === 'subtitle');
-      state.candidates = [].concat(ch.candidates || [], kept, dm.candidates || []);
+      const bins = s.useDanmaku && mem && state.binsCid === String(info.cid) ? binCandidates(mem, state.heat, info.duration, s) : [];
+      state.candidates = [].concat(ch.candidates || [], kept, dm.candidates || [], bins);
       state.boundaries = ch.boundaries || state.boundaries;
       applyFusion('keywords');
-      if (state.status === 'ready') { state.cacheTs = Date.now(); cacheResults(info); }
+      if (state.status === 'ready' && state.cacheable) { state.cacheTs = Date.now(); cacheResults(info); }
     } catch (e) { BAS.warn('re-detect failed', e); }
   }
   const redetectDebounced = debounce(redetectFromMemory, 1200);
@@ -891,9 +928,11 @@
       return;
     }
     if (['extraStartKeywords', 'extraEndKeywords', 'useChapters'].some(changed)) { redetectDebounced(); return; }
-    if (changed('useHeat') && next.useHeat && !state.heat && state.video) { detect(state.video, { force: true }).catch(() => {}); return; }
+    // the learned models read the heat curve: any change re-runs detection (as for the danmaku)
+    if (changed('useHeat') && state.video) { detect(state.video, { force: true }).catch(() => {}); return; }
     if (changed('useCrowd') && next.useCrowd && state.video && !state.candidates.some((c) => c.source === 'crowd')) { detect(state.video, { force: true }).catch(() => {}); return; }
-    if (changed('useSubtitles') && next.useSubtitles !== false && state.video && !state.candidates.some((c) => c.source === 'subtitle')) { detect(state.video, { force: true }).catch(() => {}); return; }
+    // subtitles on or off also decide whether the danmaku / heat model runs: detect again
+    if (changed('useSubtitles') && state.video) { detect(state.video, { force: true }).catch(() => {}); return; }
     if (['minConfidence', 'showMarkers', 'mode', 'useMedia', 'useAudio', 'useHeat', 'useAvProbe', 'useCrowd', 'useSubtitles'].some(changed)) applyFusion('settings');
   }
   function onStorageChanged(changes, area) {
@@ -915,7 +954,7 @@
     const problems = [];
     if (!r || !r.version) problems.push('后台服务没有响应');
     else if (r.version !== BAS.VERSION) problems.push(`文件已更新到 ${BAS.VERSION}，但 Chrome 还在运行 ${r.version}`);
-    const missing = ['detectCrowd', 'buildSegments', 'detectHeat', 'findAdEnd', 'detectSubtitles', 'subtitleModel'].filter((k) => !BAS[k]);
+    const missing = ['detectCrowd', 'buildSegments', 'detectHeat', 'findAdEnd', 'detectSubtitles', 'subtitleModel', 'mediaFeatures'].filter((k) => !BAS[k]);
     if (missing.length) problems.push('缺少模块 ' + missing.join('、'));
     if (r && r.crowdPermission === false && settings().useCrowd !== false) problems.push('没有访问 bsbsb.top（众包片段库）的权限');
     state.selfCheck = problems;

@@ -3,10 +3,13 @@
  * No AI and nothing sent anywhere: every subtitle line gets a score from a table of phrase weights (27-subtitle-model.js,
  * counted from thousands of crowd-labelled videos — how much more often a phrase is said inside a marked ad than outside
  * one), plus a few things about the line itself (where it sits in the video, how fast it is read, whether it repeats a
- * name that is said nowhere else in the video — the product). A two-state segmenter then picks the stretches whose lines
- * add up to a read, opening and closing on the sentences reads usually open and close with; each stretch is scored once
- * more as a whole (how strong, how long, how it stands out from the talk around it) and skipped, offered or dropped by
- * that score. Subtitle lines are sentence-timed, so both edges land on a sentence boundary. Pure; no DOM / chrome.*.
+ * name that is said nowhere else in the video — the product). Boosted decision trees (also plain numbers in
+ * 27-subtitle-model.js) then re-score each line from how those scores run around it and across the video and, when
+ * given, from what the danmaku and the heat curve say at that moment (29-media-features.js). A two-state segmenter picks
+ * the stretches whose lines add up to a read, opening and closing on the sentences reads usually open and close with;
+ * each stretch is scored once more as a whole (how strong, how long, how it stands out from the talk around it) and
+ * skipped, offered or dropped by that score. Subtitle lines are sentence-timed, so both edges land on a sentence
+ * boundary. Pure; no DOM / chrome.*.
  */
 (() => {
   const BAS = globalThis.BAS;
@@ -149,6 +152,93 @@
     const out = new Float64Array(L.length);
     for (let i = 0; i < L.length; i++) out[i] = tableScore(L, i, M);
     return out;
+  }
+
+  /** Log-odds of row `off` of a flat feature array from boosted trees {base, trees: [{f, t, l, r, v}]} (f < 0: a leaf). */
+  function predictTrees(T, x, off) {
+    let s = T.base;
+    for (const t of T.trees) {
+      let k = 0;
+      while (t.f[k] >= 0) k = x[off + t.f[k]] <= t.t[k] ? t.l[k] : t.r[k];
+      s += t.v[k];
+    }
+    return s;
+  }
+  const STACK_D = 35;
+  /**
+   * Second stage, per line: how the phrase-table scores S run around the line (the lines next to it, the talk in the
+   * 10 / 30 / 60 / 90 s around it) and across the whole video (how the line ranks, how strong the video's best
+   * stretch is), where the line sits, and the edge tables' view of it. Float32Array n × (STACK_D + extraD);
+   * extra(i, out, offset) may fill extraD more columns (danmaku / heat).
+   */
+  function stackFeatures(L, S, M, extraD = 0, extra = null) {
+    const n = L.length, D = STACK_D + extraD, P = M.params, out = new Float32Array(n * D);
+    if (!n) return out;
+    const e = new Float64Array(n), mid = new Float64Array(n);
+    for (let i = 0; i < n; i++) { e[i] = S[i] - P.prior; mid[i] = (L[i].a + L[i].b) / 2; }
+    const sorted = Float64Array.from(e).sort();
+    let sum = 0, sq = 0, high = 0;
+    for (let i = 0; i < n; i++) { sum += e[i]; sq += e[i] * e[i]; if (e[i] > 3) high++; }
+    const mean = sum / n, sd = Math.sqrt(Math.max(1e-6, sq / n - mean * mean));
+    const vmax = sorted[n - 1], p95 = sorted[Math.min(n - 1, Math.floor(0.95 * n))];
+    const dur = L.duration > 0 ? L.duration : L[n - 1].b;
+    // distance to the nearest other strong line, both ways
+    const nearHigh = new Float64Array(n).fill(900);
+    let lastHigh = -Infinity;
+    // (≥ 0 also when lines overlap and a midpoint runs backwards)
+    for (let i = 0; i < n; i++) { nearHigh[i] = Math.min(900, Math.max(0, mid[i] - lastHigh)); if (e[i] > 3) lastHigh = mid[i]; }
+    lastHigh = Infinity;
+    for (let i = n - 1; i >= 0; i--) { nearHigh[i] = Math.min(nearHigh[i], Math.max(0, lastHigh - mid[i])); if (e[i] > 3) lastHigh = mid[i]; }
+    const at = (j) => (j >= 0 && j < n ? e[j] : -8);
+    // mean, max and share > 0 of e over the lines whose midpoint is within [t + lo, t + hi] of line i's
+    const win = (i, lo, hi) => {
+      const t = mid[i];
+      let s = 0, c = 0, mx = -8, pos = 0;
+      const add = (j) => { s += e[j]; c++; if (e[j] > mx) mx = e[j]; if (e[j] > 0) pos++; };
+      for (let j = i, k = 0; j >= 0 && k < 400; j--, k++) { const d = mid[j] - t; if (d < lo) break; if (d <= hi) add(j); }
+      for (let j = i + 1, k = 0; j < n && k < 400; j++, k++) { const d = mid[j] - t; if (d > hi) break; if (d >= lo) add(j); }
+      return c ? [s / c, mx, pos / c] : [-8, -8, 0];
+    };
+    const T = M.start && P.edgeBack >= 0;
+    for (let i = 0; i < n; i++) {
+      const l = L[i], o = i * D;
+      let lo = 0, hi = n;
+      while (lo < hi) { const k = (lo + hi) >> 1; if (sorted[k] < e[i]) lo = k + 1; else hi = k; }
+      const w10b = win(i, -10, -1e-9), w10f = win(i, 1e-9, 10), w30 = win(i, -30, 30), w60 = win(i, -60, 60), w90 = win(i, -90, 90);
+      out[o] = e[i];
+      out[o + 1] = at(i - 3); out[o + 2] = at(i - 2); out[o + 3] = at(i - 1); out[o + 4] = at(i + 1); out[o + 5] = at(i + 2); out[o + 6] = at(i + 3);
+      out[o + 7] = w10b[0]; out[o + 8] = w10f[0]; out[o + 9] = w30[0]; out[o + 10] = w60[0];
+      out[o + 11] = w30[1]; out[o + 12] = w90[1]; out[o + 13] = w30[2];
+      out[o + 14] = lo / n; out[o + 15] = vmax; out[o + 16] = mean; out[o + 17] = p95; out[o + 18] = (e[i] - mean) / sd;
+      out[o + 19] = Math.log1p(nearHigh[i]);
+      out[o + 20] = l.pos; out[o + 21] = Math.log(Math.max(1, dur)); out[o + 22] = Math.log1p(Math.max(0, l.a)); out[o + 23] = Math.log1p(Math.max(0, dur - l.b));
+      out[o + 24] = l.cps; out[o + 25] = Math.min(30, l.gap); out[o + 26] = i + 1 < n ? Math.min(30, L[i + 1].gap) : 30; out[o + 27] = l.n.length;
+      out[o + 28] = l.burst; out[o + 29] = l.novel; out[o + 30] = Math.log1p(high);
+      out[o + 31] = T ? edgeScore(L, i, M.start, pick(P.sDrop, 'f:')) : 0;
+      out[o + 32] = M.end && P.edgeBack >= 0 ? edgeScore(L, i, M.end, pick(P.eDrop, 'b:')) : 0;
+      out[o + 33] = M.bstart ? boundaryLogP(L, i, M.bstart, 'start') : 0;
+      out[o + 34] = M.bend ? boundaryLogP(L, i, M.bend, 'end') : 0;
+      if (extra) extra(i, out, o + STACK_D);
+    }
+    return out;
+  }
+  /** Line log-odds after the second stage (trees T, by default the model's text-only `line` trees, over stackFeatures). */
+  function stackScores(L, S, M, extraD = 0, extra = null, T = M.line) {
+    const D = STACK_D + extraD, X = stackFeatures(L, S, M, extraD, extra), out = new Float64Array(L.length);
+    for (let i = 0; i < L.length; i++) out[i] = predictTrees(T, X, i * D);
+    return out;
+  }
+  /**
+   * The line scores the segmenter uses: the phrase table, then the second stage — with the danmaku and the heat curve
+   * (`lineM` trees) when they are given, else from the text alone (`line`).
+   */
+  function scoresOf(L, M, dur, settings, media) {
+    const S0 = lineScores(L, M), MF = BAS.mediaFeatures;
+    if (M.lineM && MF && media && (Array.isArray(media.danmaku) || media.heat)) {
+      const X = media.index || MF.prepareMedia(media.danmaku || [], media.heat || null, dur, settings);
+      return stackScores(L, S0, M, MF.CONST.MEDIA_D, (i, out, off) => MF.mediaAt(X, L[i].a, L[i].b, out, off), M.lineM);
+    }
+    return M.line ? stackScores(L, S0, M) : S0;
   }
 
   /**
@@ -305,15 +395,16 @@
    * @param {Array<{from:number, to:number, content:string}>} lines  subtitle body (bilibili subtitle JSON .body)
    * @param {number} duration
    * @param {object} [settings]
+   * @param {{danmaku?: object[], heat?: object}} [media]  the video's danmaku ([{t, text}]) and parsed heat curve, if known
    * @returns {{candidates: object[], rejected: object[], lines: number}}
    */
-  function detectSubtitles(lines, duration, settings) {
+  function detectSubtitles(lines, duration, settings, media) {
     const M = model();
     const L = prepare(lines, duration);
     if (!L.length || !M) return { candidates: [], rejected: [], lines: L.length };
     const dur = duration > 0 ? duration : L.duration;
     const P = M.params;
-    const S = lineScores(L, M);
+    const S = scoresOf(L, M, dur, settings, media);
     const out = [], rejected = [];
     for (const span of segment(L, S, P)) {
       const [i0, i1] = refine(L, M, span[0], span[1]);
@@ -344,12 +435,12 @@
    * Skip button: the read playing at t — one the detector found or offered, or the weaker stretch around t now that the
    * viewer confirmed there is an ad. @returns {{end:number, start:number, reason:string, detected:boolean}|null}
    */
-  const lastRun = new WeakMap();   // prepared transcript → {M, duration, r}: a press does not rescore every line
-  function readEndAt(lines, t, duration) {
+  const lastRun = new WeakMap();   // prepared transcript → {M, duration, media, r}: a press does not rescore every line
+  function readEndAt(lines, t, duration, media) {
     const L = prepare(lines, duration);
     if (!L.length || !isFinite(t)) return null;
     let run = lastRun.get(L);
-    if (!run || run.M !== model() || run.duration !== duration) lastRun.set(L, run = { M: model(), duration, r: detectSubtitles(L, duration) });
+    if (!run || run.M !== model() || run.duration !== duration || run.media !== media) lastRun.set(L, run = { M: model(), duration, media, r: detectSubtitles(L, duration, undefined, media) });
     const r = run.r;
     const c = r.candidates.find((x) => t >= x.start - 3 && t < x.end - 2);
     if (c) return { end: c.end, start: c.start, reason: c.reason, detected: !c.offerOnly };
@@ -363,12 +454,15 @@
   detectSubtitles.features = features;
   detectSubtitles.boundaryFeatures = boundaryFeatures;
   detectSubtitles.lineScores = lineScores;
+  detectSubtitles.stackFeatures = stackFeatures;
+  detectSubtitles.stackScores = stackScores;
+  detectSubtitles.predictTrees = predictTrees;
   detectSubtitles.segment = segment;
   detectSubtitles.refine = refine;
   detectSubtitles.tableScore = tableScore;
   detectSubtitles.readFeatures = readFeatures;
   detectSubtitles.readProbability = readProbability;
   detectSubtitles.readEndAt = readEndAt;
-  detectSubtitles.CONST = { WINDOW, BURST_NEAR, BURST_FAR, NOVEL_FAR, MIN_LEN, MAX_LEN, READ_CTX, MAX_NEAR, MAX_CHARS };
+  detectSubtitles.CONST = { WINDOW, BURST_NEAR, BURST_FAR, NOVEL_FAR, MIN_LEN, MAX_LEN, READ_CTX, MAX_NEAR, MAX_CHARS, STACK_D };
   BAS.detectSubtitles = detectSubtitles;
 })();

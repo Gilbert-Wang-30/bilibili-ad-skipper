@@ -10,6 +10,7 @@ const PURE_MODULES = [
   '21-wbi.js',
   '27-subtitle-model.js',
   '28-detect-subtitles.js',
+  '29-media-features.js',
   '30-detect-chapters.js',
   '31-detect-danmaku.js',
   '34-detect-heat.js',

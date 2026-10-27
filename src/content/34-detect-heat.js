@@ -122,6 +122,7 @@
     const minConf = settings && isFinite(settings.minConfidence) ? settings.minConfidence : 0.6;
     return list.map((c) => {
       if (!c || c.source !== 'danmaku' || c.offerOnly || c.end == null || !isFinite(c.end)) return c;
+      if (c.evidence && c.evidence.bins) return c;   // the danmaku / heat model already weighed the curve
       const ev = c.evidence || {};
       const r = matchRun(analysis, c.start, c.end);
       if (!r) {

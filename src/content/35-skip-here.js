@@ -8,9 +8,10 @@
  *   4. landing markers (欢迎回来 / 空降成功 / 感谢NNN工程 …) posted after t;
  *   5. the viewer-heat ramp that contains t → its peak (±half a heat sample);
  *   6. a single coordinate; 7. a chapter boundary ≤ 20 s ahead; 8. otherwise step forward FALLBACK_STEP s.
- * Measured on 936 presses at 1/4, 1/2, 3/4 of crowd-labelled ads (v2.0.0, this order): within 3 s of the end — targets
- * 89 %, subtitle read 89 %, landing markers 59 % (only presses without a read), heat 63 %, single coordinate 45 %, blind
- * step 21 %. With landing markers first the read was 88 % and the markers 73 %; where both answered, read 91 % vs 79 %.
+ * Measured on 936 presses at 1/4, 1/2, 3/4 of crowd-labelled ads (v3.0.0, this order, the read scored with the danmaku /
+ * heat as the extension does): within 3 s of the end — targets 89 %, subtitle read 91 %, landing markers 62 % (only
+ * presses without a read), heat 61 %, single coordinate 45 %, blind step 22 %. With landing markers first the read was
+ * 90 % and the markers 73 %; where both answered, read 92 % vs 78 %.
  * Pure: no DOM / chrome.* access.
  */
 (() => {
@@ -123,7 +124,7 @@
     // 3) the sponsor read in the subtitles
     let read = null;
     if (BAS.detectSubtitles && Array.isArray(c0.subtitles) && c0.subtitles.length) {
-      try { read = BAS.detectSubtitles.readEndAt(c0.subtitles, t, isFinite(dur) ? dur : 0); } catch (e) { read = null; }
+      try { read = BAS.detectSubtitles.readEndAt(c0.subtitles, t, isFinite(dur) ? dur : 0, c0.media || undefined); } catch (e) { read = null; }
       if (read && !(read.end >= lo && read.end <= hi + 1)) read = null;
     }
     // 7) next chapter boundary

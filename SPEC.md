@@ -63,8 +63,9 @@ src/content/10-storage.js         settings + per-video overrides + result cache
 src/content/20-protobuf.js        BAS.decodeDmSeg(ArrayBuffer|Uint8Array) → Danmaku[]
 src/content/21-wbi.js             BAS.wbi.sign(params, imgKey, subKey) + md5
 src/content/22-api.js             BAS.api.*
-src/content/27-subtitle-model.js  BAS.subtitleModel: the subtitle detector's weight tables (generated, §7.9)
+src/content/27-subtitle-model.js  BAS.subtitleModel: weight tables + boosted trees of the subtitle detector and the bin model (generated, §7.9, §7.10)
 src/content/28-detect-subtitles.js BAS.detectSubtitles() (§7.9)
+src/content/29-media-features.js  BAS.mediaFeatures: danmaku / heat features, the bin model for videos without subtitles (§7.10)
 src/content/30-detect-chapters.js BAS.detectChapters()
 src/content/31-detect-danmaku.js  BAS.detectDanmaku()
 src/content/32-media.js           BAS.MediaAnalyzer
@@ -340,12 +341,12 @@ cluster after now → heat ramp containing now (its peak end; a second press pas
 → a single target → a chapter boundary ≤ 20 s
 ahead (a farther one was a median 54 s past the ad's end) → +15 s. When results came from the cache, danmaku (with the
 bridge's preloaded segments) and subtitles are loaded with a 2.5 s deadline; the press never waits longer.
-Measured on 936 presses at ¼ / ½ / ¾ of the held-out crowd-labelled ads (v2.0.0, this order, no known segment passed
-in), within 3 s of the end: targets 89 % (276 presses), subtitle read 89 % (398), landing markers 59 % (85, the presses
-with no read), heat 63 % (27), single target 45 % (11), blind step 21 % (139); all together 75 % (60 % without
-subtitles). With landing markers ahead of the read the read answered 217 presses at 88 % and the markers 266 at 73 %;
-where both answer, read 91 % vs markers 79 %, which is why the read now comes first (chosen on these presses, the only
-ones with danmaku collected).
+Measured on 936 presses at ¼ / ½ / ¾ of the held-out crowd-labelled ads (v3.0.0, this order, no known segment passed
+in, the read scored with the danmaku / heat as the extension does), within 3 s of the end: targets 89 % (276 presses),
+subtitle read 91 % (387), landing markers 62 % (87, the presses with no read), heat 61 % (23), single target 45 % (11),
+blind step 22 % (152); all together 75 % (60 % without subtitles). With landing markers ahead of the read the read
+answered 210 presses at 90 % and the markers 266 at 73 %; where both answer (181 presses), read 92 % vs markers 78 %,
+which is why the read now comes first (chosen on these presses, the only ones with danmaku collected).
 The toast offers 撤销 (seek back) and 记住 (store `[start estimate, end]` as a user segment). Measured: presses early /
 mid / late in the 7 ads land within 10 s every time (16/21 within 3 s) at full density; with 1/10 of the danmaku 18/21
 within 3 s; with heat only ±17 s.
@@ -457,7 +458,7 @@ Elsewhere:
 * With `useCrowd` off, crowd candidates are ignored everywhere, the skip button included.
 * A failed lookup keeps marks already known from the cache, and is never cached as "no marks".
 
-### 7.9 AI subtitles — `BAS.detectSubtitles(lines, duration, settings)` (28-detect-subtitles.js) → `{candidates, rejected, lines}`
+### 7.9 AI subtitles — `BAS.detectSubtitles(lines, duration, settings, media)` (28-detect-subtitles.js) → `{candidates, rejected, lines}`
 
 Input: the subtitle body `[{from, to, content}]`. Source (50-main.js `loadSubtitles`): the subtitle list in the player's
 own `x/player/wbi/v2` response, forwarded by the bridge (`BAS_PLAYER_INFO.subtitles [{lan, url}]`, `signed`); the bridge
@@ -472,9 +473,13 @@ unsigned player listing: `max(30, 10 %)`) is another video's and is ignored. Set
 failed download keeps the reads already known from the cache and is never cached as "no reads" (with no such reads
 the run is not cached).
 
-No AI, no network: the model `BAS.subtitleModel` (27-subtitle-model.js, generated, ~1 MB) is a set of static weight
-tables, fitted offline by logistic regression on 2 804 crowd-labelled videos (BilibiliSponsorBlock sponsor marks + the
-videos' AI subtitles; cross-validated by uploader). The detector only sums table weights and runs a dynamic programme.
+No AI, no network: the model `BAS.subtitleModel` (27-subtitle-model.js, generated, ~3 MB, a JSON string parsed at load)
+is a set of static numbers fitted offline on 8 112 crowd-labelled videos (BilibiliSponsorBlock sponsor marks + the
+videos' AI subtitles, danmaku and heat curves; cross-validated by uploader): weight tables (logistic regression) and
+gradient-boosted decision trees (each tree a few comparisons ending in a number; a score is the sum of the numbers
+reached). The detector only adds table weights, walks the trees and runs a dynamic programme.
+`media` (optional) = `{danmaku: [{t, text}], heat: parsed heat curve, index?: prepareMedia(…)}` — the danmaku and the
+heat curve the extension already loads (§7.2, §7.5); without them the text-only trees are used.
 
 Algorithm:
 1. Lines: normalised (half-width, lower case, digits → 0, CJK / a–z / 0 only), time-sorted. Per line: `o:` its
@@ -484,7 +489,14 @@ Algorithm:
    share of its names said nowhere more than 120 s away. Work bounds for files that are not sentence-timed speech: at most
    24 neighbouring lines per side count as context and the first 80 characters of a line are scored (real AI
    subtitles have ≤ 20 lines in 7 s and rarely 80 characters).
-2. Line score: `w.bias + Σ w[feature]` (the main table, 20 000 weights) = ad log-odds.
+2. Phrase score S0: `w.bias + Σ w[feature]` (the main table, 20 000 weights) = ad log-odds.
+   Second stage (`stackFeatures`, 35 columns per line): S0 of the line and of the 3 lines on each side; the mean of S0
+   over the 10 s before / after and ±30 / ±60 s, its max over ±30 / ±90 s and its share > 0 over ±30 s; the line's rank
+   and z-score in the video, the video's max / mean / 95th percentile and number of strong lines; the distance to the
+   nearest strong line; position, duration, time from start / to end; reading speed, pauses, length, burst / novel; the
+   start / end / boundary table scores. With `media`, 19 more columns
+   (§7.10 `mediaAt` over the line's time). Trees `lineM` (with media) or `line` (text only), 300 trees of depth ≤ 6 →
+   the line score S the following steps use.
 3. Segment: two-state Viterbi (content / read) maximising Σ over read lines of `alpha·(score − prior) − shift`, minus
    `enter` per read; a pause > `maxGap` s ends a read.
 4. Edges (`refine`): the start is moved to the change point, within `sBack` s before / `sFwd` s after the first line,
@@ -496,19 +508,40 @@ Algorithm:
    log length (s) and log line count, position in the video, whether it starts in the first 15 s, the mean score of the
    lines in the 30 s before and after it, and the best 5-line mean score elsewhere in the video (outside the stretch
    ± 30 s) → p.
-6. Accept: length 8–420 s; p ≥ `auto` (0.9) → auto-skip, confidence 0.75 + 0.2·(p − auto)/(1 − auto) ≤ 0.95;
-   `offer` (0.6) ≤ p < `auto` → offered, 0.5; below → rejected (returned for the skip button).
+6. Accept: length 8–420 s; p ≥ `auto` (0.8) → auto-skip, confidence 0.75 + 0.2·(p − auto)/(1 − auto) ≤ 0.95;
+   `offer` (0.5) ≤ p < `auto` → offered, 0.5; below → rejected (returned for the skip button). The segmenter settings
+   (alpha / shift / enter / maxGap) were chosen by the mean recall over a family of false-skip budgets.
 7. More than `maxReads` (4) auto reads, or auto reads covering > `maxShare` (40 %) of the video: all offer-only, ≤ 0.5
    (a shopping video). An offered segment's button names its source (字幕建议跳过 / 弹幕建议跳过 / 众包建议跳过).
 
-`readEndAt(lines, t, duration)`: the accepted read containing t → its end; else a rejected stretch with p ≥ 0.15 and
+`readEndAt(lines, t, duration, media)`: the accepted read containing t → its end; else a rejected stretch with p ≥ 0.15 and
 ≥ 6 s containing t (`detected: false`) (`findAdEnd` source `subtitle`). The detection is kept per prepared transcript,
 so a press does not rescore it. Following the talk forward without a read was
 measured worse than the blind step and is not done.
 
-Measured (README "Accuracy" → "AI subtitles"): cross-validated on the 2 804 training videos (by uploader, 3 splits)
-76 % of crowd ads auto-skipped at p ≥ 0.9, 0–2 stretches outside every mark; on the 290 held-out test videos with a
-transcript 68.7 % from the transcript alone, no auto-skip on unlabeled content.
+Measured (README "Accuracy" → "Learned models"): cross-validated on the 8 112 training videos (by uploader) 81.4 % of
+crowd ads auto-skipped at p ≥ 0.8, 1 stretch outside every mark; on the 290 held-out test videos with a transcript
+74.7 % from the subtitle model, no auto-skip on unlabeled content.
+
+### 7.10 Danmaku / heat features and the bin model — `BAS.mediaFeatures` (29-media-features.js)
+
+Pure. `prepareMedia(danmaku, heat, duration, settings)` indexes a video's danmaku (time and text only — the models were
+trained on the danmaku XML pool, which has no `airborne` actions): each classified once with `detectDanmaku.classify`
+(§7.2: jump cues and their targets, ad announcements, sponsor words, landing thanks), plus the hand-written detector's
+segments and `detectHeat.analyse`. `mediaAt(X, a, b, out, off)` writes 19 numbers for the moment [a, b]: danmaku count,
+local density against the video's rate, ad vocabulary in ±30 s and the 90 s before, jump cues posted up to 240 s
+before that point past the moment (by / without weak targets), jump targets landing within ±15 s, landing thanks in the
+60 s after / before, announcements, soft words, the hand-written detector's confidence there (offer-only halved), whether
+it is inside / ends near one of its segments, heat usable, heat level / slope / max over the next 60 s against the
+median, inside an (ad-like) heat run.
+
+`detectBins(danmaku, heat, duration, settings, {hasBody})` — for videos without subtitles (50-main.js decides once per
+detection: no subtitle lines scored, the subtitle lookup failed with nothing cached, or subtitles turned off): the video
+in `bins.bin` (2) s bins, each `binRow` = the 19 media numbers + position, duration, time from start / to end, danmaku
+rate, hasBody → trees `bins.trees` → the two-state segmenter (§7.9 step 3, `bins.params`) → stretch score =
+logistic(`bins.read` · [1, mean, max of the bin scores − prior, log length, start / duration, hasBody]). p ≥ 0.98 →
+auto-skip (confidence 0.7 – 0.9), 0.8 ≤ p < 0.98 → offered; length 8–420 s. Candidates have source `danmaku`
+(reason 弹幕/热度模型), `evidence.bins.p`; the heat guard (§7.5) does not cap them (the model already read the curve).
 
 ## 8. Skipper — `new BAS.Skipper(video, opts)`
 

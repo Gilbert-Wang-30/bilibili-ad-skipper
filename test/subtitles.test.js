@@ -57,7 +57,7 @@ Deno.test('detectSubtitles: a video that sells from start to end is never auto-s
   assertEquals(five.length, 5);
   assert(five.every((c) => c.offerOnly && c.confidence <= 0.5 && /整期像带货/.test(c.reason)), JSON.stringify(five.map((c) => [c.start, c.offerOnly, c.confidence])));
   // one read that is over 40 % of a short video: also only offered
-  const short = D(body([].concat(filler(0, 18), READ.map(([t, x]) => [t - 280, x]), filler(44, 62))), 62).candidates;
+  const short = D(body([].concat(filler(0, 18), READ.map(([t, x]) => [t - 280, x]), filler(44, 46))), 46).candidates;
   assertEquals(short.length, 1);
   assert(short[0].offerOnly && /整期像带货/.test(short[0].reason), JSON.stringify(short));
 });
