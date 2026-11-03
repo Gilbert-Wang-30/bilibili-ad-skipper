@@ -59,8 +59,13 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
   audio or picture is stored; only the verdict goes into the result cache. Turn it off with **音视频预读核验**. The skip
   button's media check (about 5 MB per press) is a separate setting.
 * Settings sync through `chrome.storage.sync`. Per-video ignores and a 12-hour result cache stay in `chrome.storage.local`.
+* **Volume curve (on by default; 音量曲线 in the options).** On `www.bilibili.com` and `live.bilibili.com` pages a small
+  page script remaps the players' volume slider through a perceptual curve. It reads nothing and sends nothing; the
+  extension's own script on the page hands it the setting. Like any page script, it lets bilibili's pages (and scripts
+  they load) tell that the extension is installed and which curve is set; nothing else is exposed.
 * Host permissions are limited to `www.bilibili.com`, `api.bilibili.com`, `bvc.bilivideo.com` and `bsbsb.top` (the
-  crowd lookup). The video and subtitle CDNs answer the page's own requests, so they need no extra permission.
+  crowd lookup); the extension's scripts also run on `live.bilibili.com`, for the volume curve only. The video and
+  subtitle CDNs answer the page's own requests, so they need no extra permission.
 
 ## Install (unpacked)
 
@@ -92,7 +97,11 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
 * **Popup** (toolbar icon): on/off, mode, the list of segments (跳到此处 / 忽略), low-confidence candidates, manual marking
   (标记广告开始 / 结束), 重新检测, 清除本视频覆盖.
 * **Options**: confidence threshold, which signals to use (incl. the audio/video look-ahead), live audio analysis (off by default), markers/toast, landing offset,
-  extra keywords, ignored UP主 (mid or space link), debug logging, export/import.
+  extra keywords, ignored UP主 (mid or space link), debug logging, export/import, the volume curve.
+* **Volume that sounds even** (videos and live rooms): bilibili's players set the media element's volume straight from
+  their slider, and that is an amplitude, so most of the slider sounds loud (50 % is only 6 dB below full) and the quiet
+  end barely exists. The extension plays slider value ^ 2.5 instead (50 % ≈ −15 dB, 20 % ≈ −35 dB, 10 % ≈ −50 dB), while
+  the player still shows and remembers the slider value. 音量曲线 in the options: 关闭 / 柔和 (^1.8) / 标准 (^2.5) / 强 (^3.5).
 
 Per-video overrides and a 12-hour result cache live in `chrome.storage.local`; settings sync via `chrome.storage.sync`.
 
@@ -101,6 +110,8 @@ Per-video overrides and a 12-hour result cache live in `chrome.storage.local`; s
 ```
 manifest.json                 MV3 manifest (content scripts in load order, MAIN-world bridge)
 src/page-bridge.js            MAIN world: page state (aid/bvid/cid/p) + observed player API responses → postMessage
+src/volume-curve.js           MAIN world (www + live): the media elements' volume through a perceptual curve
+src/volume-settings.js        isolated world (www + live): hands the volume-curve setting to the page script
 src/content/00-ns.js          BAS namespace, utils (time parsing incl. 空降 formats), defaults
 src/content/10-storage.js     settings / overrides / cache
 src/content/20-protobuf.js    danmaku protobuf decoder
@@ -302,5 +313,6 @@ ends worse as better against the crowd. To rerun the test: `tools/bsb-prepare.py
   never get its boost.
 * Only verified on a handful of channels' audiences (小约翰可汗, 半佛仙人, 极客湾, 影视飓风); other communities' conventions
   are parsed but untested.
-* Only `www.bilibili.com/video/*` (plus `/list/*`, `/festival/*`) pages; bangumi/live are out of scope.
+* Only `www.bilibili.com/video/*` pages (plus `/list/*`, `/festival/*` and the localized `/en/`, `/zh-Hans/`, `/ja/` …
+  versions of them); bangumi is out of scope, and in live rooms only the volume curve runs.
 * Bilibili's own pre-roll/overlay ads are not touched.

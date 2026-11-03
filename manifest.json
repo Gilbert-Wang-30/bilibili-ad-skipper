@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Bilibili Ad Skipper (恰饭跳过)",
-  "version": "3.0.0",
-  "description": "自动检测并跳过 B 站视频中的植入广告（恰饭）。基于 UP 主章节、众包标记（小电视空降助手）、字幕里的口播（本地统计，不用 AI）、弹幕（空降/感谢）、播放热度和音视频核验。",
+  "version": "3.1.0",
+  "description": "自动检测并跳过 B 站视频中的植入广告（恰饭）。基于 UP 主章节、众包标记（小电视空降助手）、字幕里的口播（本地统计，不用 AI）、弹幕（空降/感谢）、播放热度和音视频核验。另外把 B 站视频和直播的音量条改成听感均匀的曲线。",
   "minimum_chrome_version": "111",
   "permissions": [
     "storage"
@@ -39,10 +39,35 @@
   "content_scripts": [
     {
       "matches": [
+        "https://www.bilibili.com/*",
+        "https://live.bilibili.com/*"
+      ],
+      "js": [
+        "src/volume-curve.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://www.bilibili.com/*",
+        "https://live.bilibili.com/*"
+      ],
+      "js": [
+        "src/volume-settings.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
         "https://www.bilibili.com/video/*",
-        "https://www.bilibili.com/en/video/*",
+        "https://www.bilibili.com/*/video/*",
         "https://www.bilibili.com/list/*",
-        "https://www.bilibili.com/festival/*"
+        "https://www.bilibili.com/*/list/*",
+        "https://www.bilibili.com/festival/*",
+        "https://www.bilibili.com/*/festival/*"
       ],
       "js": [
         "src/page-bridge.js"
@@ -53,9 +78,11 @@
     {
       "matches": [
         "https://www.bilibili.com/video/*",
-        "https://www.bilibili.com/en/video/*",
+        "https://www.bilibili.com/*/video/*",
         "https://www.bilibili.com/list/*",
-        "https://www.bilibili.com/festival/*"
+        "https://www.bilibili.com/*/list/*",
+        "https://www.bilibili.com/festival/*",
+        "https://www.bilibili.com/*/festival/*"
       ],
       "js": [
         "src/content/00-ns.js",

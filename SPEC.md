@@ -58,6 +58,8 @@ manifest.json
 icons/16.png 32.png 48.png 128.png
 src/background.js                 service worker: fetch proxy, defaults, badge
 src/page-bridge.js                MAIN world: page state + fetch hooks → postMessage
+src/volume-curve.js               MAIN world, www.bilibili.com/* + live.bilibili.com/*, all frames: volume curve (§12a)
+src/volume-settings.js            isolated world, same pages: the volumeCurve setting → volume-curve.js (§12a)
 src/content/00-ns.js              BAS namespace, constants, utils, event bus, DEFAULT_SETTINGS
 src/content/10-storage.js         settings + per-video overrides + result cache
 src/content/20-protobuf.js        BAS.decodeDmSeg(ArrayBuffer|Uint8Array) → Danmaku[]
@@ -611,6 +613,22 @@ Popup (zh-CN UI, 320 px wide): header with enable switch + mode select (自动�
 When no bilibili video tab is active: show hint. Use `chrome.tabs.query({active:true,currentWindow:true})` + `chrome.tabs.sendMessage`; handle "Receiving end does not exist" (show '请刷新页面').
 
 Options: every setting in §3 with explanations, keyword textareas (one per line), ignoreUps textarea (mid 或 空间链接), 清除所有缓存/覆盖 buttons, export/import JSON. Save on change with a small "已保存" indicator.
+
+## 12a. Volume curve — volume-curve.js (MAIN world) + volume-settings.js (isolated)
+
+The bilibili video player sets `video.volume = slider` (0–1) and the live player `video.volume = value / 100`; both read
+`volume` back for their UI and saved volume. `volume` is an amplitude, so the slider is perceptually compressed.
+volume-curve.js (document_start, all frames) wraps the `volume` accessor of `HTMLMediaElement.prototype` and of the
+player's `<bwp-video>` custom element (by intercepting `customElements.define`; never twice for one accessor chain):
+the setter passes `slider ^ k` to the real setter and stores `{slider, level written}` per element (WeakMap), keeping
+a WeakRef to every element it has set (also ones outside the document, e.g. a picture-in-picture window); the getter
+returns the stored slider value while the real level still equals the level written, else `real ^ (1/k)` (set some other
+way). Out-of-range values go to the real setter unchanged (it throws). `k` = setting `volumeCurve` (1 off, 1.8, 2.5 default, 3.5), received as
+`postMessage({type: 'BAS_VOLUME_CURVE', exponent})` from volume-settings.js (on load, on `BAS_VOLUME_HELLO`, on storage
+change); values outside [1, 5] are ignored, and volume-settings.js sends only the four choices (anything else stored
+→ 2.5). On a change every element set so far and every `video, audio, bwp-video` in the document keeps its slider value
+at the new level. Measured on the live players: slider 50 → −15 dB, 20 → −35 dB, 10 → −50 dB; the players' UI and
+saved volume show the slider value.
 
 ## 14. Tests (Deno, no npm)
 

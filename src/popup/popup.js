@@ -26,11 +26,13 @@
     extraEndKeywords: [],
     ignoreUps: [],
     debug: false,
+    volumeCurve: 2.5,
   };
 
   const REFRESH_MS = 1500;
   const REPLY_TIMEOUT_MS = 2500;
-  const VIDEO_URL_RE = /^https:\/\/www\.bilibili\.com\/(video|list|festival)\//;
+  // also the localized routes bilibili serves the same player on (/en/, /zh-Hans/, /ja/ … video/)
+  const VIDEO_URL_RE = /^https:\/\/www\.bilibili\.com\/(?:[a-z]{2,3}(?:-[A-Za-z]{2,4})?\/)?(video|list|festival)\//;
   const SOURCE_LABEL = { chapter: '章节', crowd: '众包', subtitle: '字幕', danmaku: '弹幕', user: '手动', media: '音视频', heat: '热度' };
   const MARKS_KEY = 'popupMarks';
 

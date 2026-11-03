@@ -26,6 +26,7 @@
     extraEndKeywords: [],
     ignoreUps: [],
     debug: false,
+    volumeCurve: 2.5,
   };
 
   const LIMITS = {
@@ -35,6 +36,7 @@
   };
   // chrome.storage.sync allows 8 KB per item and settings are one item; worst case below (UTF-8, 3 bytes per CJK char):
   // 2 × 30 × 20 × 3 ≈ 3.6 KB keywords + 300 × ~12 B ≈ 3.6 KB mids + ~0.4 KB other fields < 8 KB.
+  const VOLUME_CURVES = [1, 1.8, 2.5, 3.5];   // off, gentle, standard, strong (the <select> in options.html)
   const MAX_KEYWORDS = 30;
   const MAX_KEYWORD_LEN = 20;
   const MAX_UPS = 300;
@@ -119,6 +121,7 @@
       extraEndKeywords: toStrList(src.extraEndKeywords, MAX_KEYWORD_LEN),
       ignoreUps: normalizeIgnoreUps(src.ignoreUps),
       debug: toBool(src.debug, d.debug),
+      volumeCurve: VOLUME_CURVES.includes(toNum(src.volumeCurve, d.volumeCurve)) ? toNum(src.volumeCurve, d.volumeCurve) : d.volumeCurve,
     };
     out.minConfidence = Math.round(out.minConfidence * 100) / 100;
     out.landingOffsetSec = Math.round(out.landingOffsetSec * 10) / 10;

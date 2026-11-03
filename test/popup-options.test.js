@@ -79,6 +79,7 @@ Deno.test('popup helpers', () => {
   assertEquals(P.sourcesOf({ source: 'chapter', sources: ['chapter', 'danmaku', 'bogus', 'danmaku'] }), ['chapter', 'danmaku']);
   assert(P.isVideoUrl('https://www.bilibili.com/video/BV1jCJs6UE9S/?p=2'));
   assert(P.isVideoUrl('https://www.bilibili.com/list/ml123'));
+  for (const loc of ['en', 'zh-Hans', 'zh-Hant', 'ja']) assert(P.isVideoUrl(`https://www.bilibili.com/${loc}/video/BV1jCJs6UE9S/`), loc);
   assert(!P.isVideoUrl('https://www.bilibili.com/'));
   assert(!P.isVideoUrl('https://space.bilibili.com/123'));
   assert(!P.isVideoUrl(undefined));

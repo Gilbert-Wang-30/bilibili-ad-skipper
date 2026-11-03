@@ -7,8 +7,8 @@ Usage: python tools/inject-bundle.py > build/inject.js
 import base64, gzip, json, os, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 manifest = json.load(open(os.path.join(ROOT, 'manifest.json'), encoding='utf-8'))
-cs = [c for c in manifest['content_scripts'] if c.get('world') != 'MAIN'][0]
-bridge = [c for c in manifest['content_scripts'] if c.get('world') == 'MAIN'][0]
+cs = next(c for c in manifest['content_scripts'] if 'src/content/00-ns.js' in c['js'])
+bridge = next(c for c in manifest['content_scripts'] if 'src/page-bridge.js' in c['js'])
 parts = []
 for js in bridge['js'] + cs['js']:
     src = open(os.path.join(ROOT, js), encoding='utf-8').read()

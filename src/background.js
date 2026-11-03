@@ -4,7 +4,7 @@ const DEFAULT_SETTINGS = {
   enabled: true, mode: 'auto', minConfidence: 0.6,
   useChapters: true, useDanmaku: true, useMedia: true, useAudio: false, useHeat: true, useCrowd: true, useSubtitles: true, useAvProbe: true, skipHereMedia: false, skipHereButton: true,
   showMarkers: true, showToast: true, toastDurationMs: 6000, landingOffsetSec: 0,
-  extraStartKeywords: [], extraEndKeywords: [], ignoreUps: [], debug: false,
+  extraStartKeywords: [], extraEndKeywords: [], ignoreUps: [], debug: false, volumeCurve: 2.5,
 };
 
 chrome.runtime.onInstalled.addListener(async () => {

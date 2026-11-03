@@ -98,6 +98,19 @@
       </section>
 
       <section class="card">
+        <h2>音量</h2>
+        <div class="row">
+          <span class="lbl">音量曲线（视频和直播）<small>B 站播放器的音量条是线性的振幅，听起来 1% 到 100% 只像 50% 到 90%：大半段都很响，小音量几乎调不出来。按人耳的感受重新分配后，音量条每一段听起来变化差不多；播放器显示和记住的音量不变，只改实际输出。</small></span>
+          <select name="volumeCurve">
+            <option value="1">关闭（原样）</option>
+            <option value="1.8">柔和</option>
+            <option value="2.5">标准</option>
+            <option value="3.5">强</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="card">
         <h2>关键词</h2>
         <div class="row col">
           <span class="lbl">额外「广告开始」弹幕关键词<small>每行一个，作为子串匹配，命中即视为强起始信号。例如：恰饭时间、本期赞助。</small></span>
