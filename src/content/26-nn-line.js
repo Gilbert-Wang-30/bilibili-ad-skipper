@@ -96,7 +96,7 @@
         Math.min(len / d, 20) / 10, Math.log1p(len) / 4, Math.log1p(dur) / 8];
       for (let k = 0; k < 8; k++) X[o + 2 * E + k] = f[k];
       for (let k = 0; k < MD; k++) {
-        const m = media ? media[i * MD + k] : net.mu[k];
+        const v = media ? media[i * MD + k] : NaN, m = v === v ? v : net.mu[k];   // NaN (not known): the training mean
         X[o + 2 * E + 8 + k] = Math.max(-5, Math.min(5, (m - net.mu[k]) / net.sd[k]));
       }
       if (cfg.s0) X[o + D - 1] = Math.max(-4, Math.min(4, (l.s0 || 0) / 4));
@@ -200,7 +200,7 @@
     // danmaku / heat columns: mean inside, over the lines starting in the 30 s after, over those ending in the 30 s before
     const inside = new Float64Array(MD), after = new Float64Array(MD), before = new Float64Array(MD);
     let na = 0, nb = 0;
-    const col = (i, c) => (media ? (media[i * MD + c] - mu[c]) / sd[c] : 0);
+    const col = (i, c) => { const v = media ? media[i * MD + c] : NaN; return v === v ? (v - mu[c]) / sd[c] : 0; };
     for (let i = l; i <= r; i++) for (let c = 0; c < MD; c++) inside[c] += col(i, c) / k;
     for (let i = 0; i < n; i++) {
       if (L[i].a > L[r].b && L[i].a <= L[r].b + 30) { na++; for (let c = 0; c < MD; c++) after[c] += col(i, c); }
@@ -215,7 +215,7 @@
   /** P(stretch is a crowd-marked read) from the fitted logistic sc = {mu, sd, w} (w: one weight per column + bias). */
   function probability(f, sc) {
     let z = sc.w[sc.w.length - 1];
-    for (let j = 0; j < f.length; j++) z += sc.w[j] * (f[j] - sc.mu[j]) / sc.sd[j];
+    for (let j = 0; j < f.length; j++) z += sc.w[j] * Math.max(-5, Math.min(5, (f[j] - sc.mu[j]) / sc.sd[j]));
     return 1 / (1 + Math.exp(-z));
   }
 

@@ -132,6 +132,15 @@ Deno.test('findAdEnd: danmaku targets win over the transcript; the transcript be
   const tg = BAS.findAdEnd({ t: 305, duration: 900, danmaku: dm, subtitles: subs });
   assertEquals(tg.source, 'targets');
   assertEquals(BAS.findAdEnd({ t: 600, duration: 900, danmaku: [], subtitles: subs }).source, 'fallback');
+  // a read only the subtitle detector found is answered by the subtitle step (its end tables), not as a known candidate;
+  // a crowd mark (or anything with another source) still is
+  const subOnly = { start: 300, end: 340, source: 'subtitle', sources: ['subtitle'], confidence: 0.5, offerOnly: true };
+  const viaRead = BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], subtitles: subs, candidates: [subOnly] });
+  assertEquals(viaRead.source, 'subtitle');
+  assert(atEnd(viaRead.end), String(viaRead.end));
+  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], candidates: [subOnly] }).source, 'candidate');   // no transcript at hand
+  const crowd = { start: 300, end: 340, source: 'crowd', sources: ['crowd'], confidence: 0.5 };
+  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], subtitles: subs, candidates: [crowd] }).source, 'candidate');
 });
 
 Deno.test('fusion: a transcript read inside a crowd mark corroborates it; alone it is a segment of its own', () => {

@@ -2,7 +2,7 @@
 (() => {
   if (globalThis.BAS && globalThis.BAS.__loaded) return;
 
-  const VERSION = '4.0.0';
+  const VERSION = '4.0.1';
 
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,

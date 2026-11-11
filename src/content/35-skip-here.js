@@ -52,8 +52,11 @@
 
     // 1) an existing segment / candidate covering now
     let cand = null;
+    const hasSubs = !!BAS.detectSubtitles && Array.isArray(c0.subtitles) && c0.subtitles.length > 0;
     for (const c of Array.isArray(c0.candidates) ? c0.candidates : []) {
       if (!c || c.end == null || !isFinite(+c.end) || !isFinite(+c.start)) continue;
+      // a read only the subtitle detector found: step 3 answers it, with the end tables' end (more often within 3 s)
+      if (hasSubs && (c.sources || [c.source]).every((x) => x === 'subtitle')) continue;
       if (+c.start - 5 <= t && t < +c.end - 1 && +c.end >= lo && +c.end <= hi + 1) {
         if (!cand || (+c.confidence || 0) > (+cand.confidence || 0)) cand = c;
       }
@@ -124,7 +127,7 @@
     // 3) the sponsor read in the subtitles
     let read = null;
     if (BAS.detectSubtitles && Array.isArray(c0.subtitles) && c0.subtitles.length) {
-      try { read = BAS.detectSubtitles.readEndAt(c0.subtitles, t, isFinite(dur) ? dur : 0, c0.media || undefined); } catch (e) { read = null; }
+      try { read = BAS.detectSubtitles.readEndAt(c0.subtitles, t, isFinite(dur) ? dur : 0, c0.media || null); } catch (e) { read = null; }
       if (read && !(read.end >= lo && read.end <= hi + 1)) read = null;
     }
     // 7) next chapter boundary

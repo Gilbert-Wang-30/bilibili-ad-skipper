@@ -544,7 +544,13 @@ measured worse than the blind step and is not done.
 
 Measured (README "Accuracy" → "Neural line model"): cross-validated by uploader on the 8 112 training videos 84.3 % of
 crowd ads auto-skipped at p ≥ 0.75 (v3 phrase path: 81.4 % at 0.8), no skip judged content; on the 290 held-out test
-videos with a transcript 76.6 % from the subtitle model (v3: 74.7 %), no auto-skip on unlabeled content.
+videos with a transcript 77.0 % from the subtitle model (v3: 74.7 %), no auto-skip on unlabeled content. The scorer's
+standardised columns are clipped to ±5 (fitted the same way), so a column that was nearly constant in training cannot
+decide a stretch; loose (skip-button) stretches have their own scorer (`scLoose`). Without a danmaku list (danmaku off or
+not loaded) the network and the scorer read the danmaku columns (mediaAt 0–13) as unknown (training mean); a video
+nobody commented on is still 0. `readEndAt` uses the network only when `warm()` left its scores for that transcript,
+media and duration (else the phrase-table path): a press never runs the network. `findAdEnd` step 1 skips reads only
+the subtitle detector found when the transcript is at hand: step 3 answers them with the end tables' end.
 
 ### 7.10 Danmaku / heat features and the bin model — `BAS.mediaFeatures` (29-media-features.js)
 

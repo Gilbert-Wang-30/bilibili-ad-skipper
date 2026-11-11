@@ -412,28 +412,36 @@
     }
     return nnCache.net ? nnCache : null;
   }
-  /** The danmaku / heat columns of every line (Float32Array n × MEDIA_D), or null without them. */
+  const DANMAKU_COLS = 14;   // mediaAt columns 0-13 come from the danmaku, 14-18 from the heat curve
+  /**
+   * The danmaku / heat columns of every line (Float32Array n × MEDIA_D), or null without either. Without a danmaku list
+   * (danmaku off or not loaded — not the same as a video nobody commented on) its columns are NaN: not known.
+   */
   function mediaRows(L, dur, settings, media) {
     const MF = BAS.mediaFeatures;
     if (!MF || !media || !(Array.isArray(media.danmaku) || media.heat)) return null;
     const X = media.index || MF.prepareMedia(media.danmaku || [], media.heat || null, dur, settings), D = MF.CONST.MEDIA_D;
     const rows = new Float32Array(L.length * D);
     for (let i = 0; i < L.length; i++) MF.mediaAt(X, L[i].a, L[i].b, rows, i * D);
+    if (!Array.isArray(media.danmaku)) for (let i = 0; i < L.length; i++) rows.fill(NaN, i * D, i * D + DANMAKU_COLS);
     return rows;
   }
+  const sameMedia = (x, y) => (x || null) === (y || null);
+  /** The network's line scores warm() left on this prepared transcript for this network, media and duration, or null. */
+  const cachedNN = (L, N, media, dur) => (L.nnz && L.nnz.net === N.net && sameMedia(L.nnz.media, media) && L.nnz.dur === dur ? L.nnz : null);
   /** The neural path's stretches: [{i0, i1, p}] read probabilities, and looser ones for the skip button. */
   function nnStretches(L, M, N, dur, settings, media) {
     const NL = BAS.nnLine, m = N.src, n = L.length;
     // line scores computed ahead by warm() for this network, media and duration, else now
-    const c = L.nnz && L.nnz.net === N.net && L.nnz.media === media && L.nnz.dur === dur ? L.nnz : null;
+    const c = cachedNN(L, N, media, dur);
     const rows = c ? c.rows : mediaRows(L, dur, settings, media);
     const z = c ? c.z : NL.scores(N.net, L, dur, rows), p = new Float64Array(n);
     for (let i = 0; i < n; i++) p[i] = sigmoid(z[i]);
     // the scorer was fitted with the phrase-table / stack scores of each stretch as inputs (m.old)
     const old = m.old ? { ps: Float64Array.from(scoresOf(L, M, dur, settings, media), sigmoid), p0: Float64Array.from(lineScores(L, M), sigmoid) } : null;
-    const scored = (spans) => spans.map(([i0, i1]) => ({ i0, i1, p: NL.probability(NL.features(p, L, dur, i0, i1, spans.length - 1, rows, m.mu, m.sd, old), m.sc) }));
-    const main = scored(NL.stretches(p, L, m.dec));
-    const loose = scored(NL.stretches(p, L, m.loose || { hi: 0.5, lo: 0.3, w: 1, gap: 6, edge: 0.5 }))
+    const scored = (spans, sc) => spans.map(([i0, i1]) => ({ i0, i1, p: NL.probability(NL.features(p, L, dur, i0, i1, spans.length - 1, rows, m.mu, m.sd, old), sc) }));
+    const main = scored(NL.stretches(p, L, m.dec), m.sc);
+    const loose = scored(NL.stretches(p, L, m.loose || { hi: 0.5, lo: 0.3, w: 1, gap: 6, edge: 0.5 }), m.scLoose || m.sc)
       .filter((s) => !main.some((t) => s.i0 <= t.i1 && t.i0 <= s.i1));
     return { main, loose };
   }
@@ -477,7 +485,7 @@
       for (const c of out) { c.offerOnly = true; c.confidence = Math.min(c.confidence, 0.5); c.reason += '（整期像带货视频，只提示）'; }
     }
     for (const c of out) if (!c.offerOnly) delete c.offerOnly;
-    return { candidates: out, rejected, lines: L.length };
+    return { candidates: out, rejected, lines: L.length, nn: !!N };
   }
 
   /**
@@ -489,8 +497,10 @@
     const L = prepare(lines, duration);
     if (!L.length || !isFinite(t)) return null;
     let run = lastRun.get(L);
-    if (!run || run.M !== model() || run.N !== BAS.nnModel || run.duration !== duration || run.media !== media) {
-      lastRun.set(L, run = { M: model(), N: BAS.nnModel, duration, media, r: detectSubtitles(L, duration, undefined, media), old: null });
+    if (!run || run.M !== model() || run.N !== BAS.nnModel || run.duration !== duration || !sameMedia(run.media, media)) {
+      // a press must answer at once: the network's scores only when warm() left them for this transcript
+      const N = nnModel(), warmed = !!N && !!cachedNN(L, N, media, duration > 0 ? duration : L.duration);
+      lastRun.set(L, run = { M: model(), N: BAS.nnModel, duration, media, old: null, r: detectSubtitles(L, duration, undefined, media, warmed ? undefined : { phraseOnly: true }) });
     }
     const r = run.r;
     const at = (x) => t >= x.start - 3 && t < x.end - 2;
@@ -498,7 +508,7 @@
     if (c) {
       // with the neural model, the read is its; the end is the phrase-table path's when it has a stretch there (its end
       // tables land within 3 s of the crowd's end more often on skip-button presses)
-      const o = nnModel() ? (run.old ||= detectSubtitles(L, duration, undefined, media, { phraseOnly: true })) : null;
+      const o = nnModel() && run.r.nn ? (run.old ||= detectSubtitles(L, duration, undefined, media, { phraseOnly: true })) : null;
       const oc = o && (o.candidates.find(at) || o.rejected.find((x) => at(x) && x.end - x.start >= 6 && x.p >= 0.15));
       return { end: oc ? oc.end : c.end, start: c.start, reason: c.reason, detected: !c.offerOnly };
     }

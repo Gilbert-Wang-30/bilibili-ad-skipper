@@ -167,8 +167,9 @@ The neural line model (`src/content/26-nn-model.js`) is trained with PyTorch by 
 repository either, cross-validated by uploader the same way. Its training targets are the crowd marks and, as a second
 target, the line scores of a much larger model used **only during training**: a pretrained Chinese BERT
 ([hfl/chinese-roberta-wwm-ext](https://huggingface.co/hfl/chinese-roberta-wwm-ext), Apache-2.0) fine-tuned offline on the
-same marks (each video scored by a copy that never saw its uploader). That teacher does not ship and is never run by the
-extension. The shipped file holds the small network's weights as 8-bit integers with one scale per row, its list of
+same marks. For the 8 112 main videos its line scores come from the copy fine-tuned without that video's fold (folds by
+uploader); the newly collected videos are scored by copies fine-tuned on four of the five folds, so some of them by a
+copy that saw other videos of the same uploader. That teacher does not ship and is never run by the extension. The shipped file holds the small network's weights as 8-bit integers with one scale per row, its list of
 characters, and the decoder / stretch-scorer settings.
 
 Detector report over all fixtures (needs the private corpus):
@@ -224,23 +225,26 @@ has voted on yet (13 192 videos with AI subtitles, danmaku and heat curves, fetc
 are by uploader; skips outside every crowd mark were read by two independent reviewers blind to the model's score (a
 third on disagreement; the reviewers were Claude models given the transcript — only for the evaluation, the extension
 itself calls no AI service), and those judged a real paid read the crowd never marked are not counted as false skips.
+Caveat: in cross-validation a training video's soft targets come from teacher copies fine-tuned on the other folds,
+which include the fold being tested, so the cross-validated v4 figures can be somewhat optimistic; the held-out test
+is clean (its videos were never used for fitting, tuning or the teacher).
 
 | | v3 (phrase weights + trees) | **v4 (neural line model)** |
 |---|---|---|
 | Cross-validation, 8 112 videos: crowd ads auto-skipped (IoU ≥ 0.4) | 81.4 % at p ≥ 0.8 | **84.3 %** at p ≥ 0.75 |
 | … skips judged content (outside every mark) / content cut | 0 / 1 005 s | 0 / 1 009 s |
 | … at every threshold from 0.5 to 0.9 | | 2.2 – 2.4 points higher at the same or less content cut |
-| **Held-out test** (never used for fitting or tuning), the 290 videos with a transcript, whole extension | 75.1 % | **77.0 %** |
-| … the transcript model alone (content cut) | 74.7 % (8 s) | **76.6 %** (4 s) |
-| … all 375 held-out videos | 69.4 % | **70.9 %** |
+| **Held-out test** (never used for fitting or tuning), the 290 videos with a transcript, whole extension | 75.1 % | **77.4 %** |
+| … the transcript model alone (content cut) | 74.7 % (8 s) | **77.0 %** (4 s) |
+| … all 375 held-out videos | 69.4 % | **71.2 %** |
 | … skips outside every crowd mark | 0 | 0 |
 | … with the danmaku XML pool the models were trained on (290 videos) | 76.6 % | **79.2 %** |
-| Popular videos: subtitle auto-skips that are a real paid read | 51 / 53 | **50 / 52** (1 the creator's own books, 1 a video about becoming a brand ambassador) |
+| Popular videos: auto-skips from the subtitles (+ 4 from the unchanged danmaku / heat model in both) | 49 (51 of all 53 real) | **52, 50 a real paid read** (1 the creator's own books, 1 a video about becoming a brand ambassador) |
 | … blind sample (160 videos read in full): sponsor reads auto-skipped | 19 / 35 | 19 / 35 |
-| Skip button (936 presses): lands within 3 s of the labelled end | 75 % (81 % with a transcript) | **76 %** (82 %) |
+| Skip button (936 held-out presses): lands within 3 s of the labelled end | 75 % (81 % with a transcript) | **76 %** (82 %; where its end comes from was chosen on these same presses) |
 | Scoring time, longest transcripts (in short tasks) | ~0.06 s per 1 000 lines | ~0.33 s per 1 000 lines |
 
-For scale: on held-out set B (214 of those videos, 174 crowd ads), v4 auto-skips 134 (77.0 %; 140 with the XML danmaku);
+For scale: on held-out set B (214 of those videos, 174 crowd ads), v4 auto-skips 135 (77.6 %; 139 with the XML danmaku);
 the language-model design of v1.0.0 (an LLM reading the transcript through an API, since removed) skipped 164 (94.3 %).
 Most of that gap is products woven into the content — a sponsor's hardware in a PC build, a car brand in a travel vlog
 — which a small network trained on crowd marks rarely recognises, plus English transcripts.

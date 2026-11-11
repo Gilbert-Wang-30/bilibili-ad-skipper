@@ -639,7 +639,7 @@
       const [dmR, heatR] = await Promise.all([danmakuP, heatP]);
       let media = null;
       if ((dmR.list || heatR) && BAS.mediaFeatures) {
-        media = { danmaku: dmR.list || [], heat: heatR || null };
+        media = { danmaku: dmR.list || null, heat: heatR || null };
         media.index = BAS.mediaFeatures.prepareMedia(media.danmaku, media.heat, info.duration, s);
         state.subMedia = { cid: String(info.cid), media };
         await yieldTask();   // a long video's danmaku index, then its scoring, as separate tasks
