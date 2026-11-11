@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bilibili Ad Skipper (恰饭跳过)",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "自动检测并跳过 B 站视频中的植入广告（恰饭）。基于 UP 主章节、众包标记（小电视空降助手）、字幕里的口播（随扩展安装的本地小模型，不调用 AI 服务）、弹幕（空降/感谢）、播放热度和音视频核验。另外把 B 站视频和直播的音量条改成听感均匀的曲线。",
   "minimum_chrome_version": "111",
   "permissions": [

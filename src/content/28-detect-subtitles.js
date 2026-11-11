@@ -236,8 +236,8 @@
    * The line scores the segmenter uses: the phrase table, then the second stage — with the danmaku and the heat curve
    * (`lineM` trees) when they are given, else from the text alone (`line`).
    */
-  function scoresOf(L, M, dur, settings, media) {
-    const S0 = lineScores(L, M), MF = BAS.mediaFeatures;
+  function scoresOf(L, M, dur, settings, media, S0 = lineScores(L, M)) {
+    const MF = BAS.mediaFeatures;
     if (M.lineM && MF && media && (Array.isArray(media.danmaku) || media.heat)) {
       const X = media.index || MF.prepareMedia(media.danmaku || [], media.heat || null, dur, settings);
       return stackScores(L, S0, M, MF.CONST.MEDIA_D, (i, out, off) => MF.mediaAt(X, L[i].a, L[i].b, out, off), M.lineM);
@@ -413,18 +413,32 @@
     return nnCache.net ? nnCache : null;
   }
   const DANMAKU_COLS = 14;   // mediaAt columns 0-13 come from the danmaku, 14-18 from the heat curve
+  const DM_SEGMENT = 360;    // the danmaku API's segments (22-api.js): segment k covers [(k-1)·360, k·360) s
   /**
-   * The danmaku / heat columns of every line (Float32Array n × MEDIA_D), or null without either. Without a danmaku list
-   * (danmaku off or not loaded — not the same as a video nobody commented on) its columns are NaN: not known.
+   * The danmaku / heat columns of every line (Float32Array n × MEDIA_D). Without a danmaku list (danmaku off or not
+   * loaded — not the same as a video nobody commented on), and for lines in segments that failed to load, the danmaku
+   * columns are NaN: not known. Without a heat curve the heat columns are 0, as in training ("no curve").
    */
   function mediaRows(L, dur, settings, media) {
     const MF = BAS.mediaFeatures;
-    if (!MF || !media || !(Array.isArray(media.danmaku) || media.heat)) return null;
-    const X = media.index || MF.prepareMedia(media.danmaku || [], media.heat || null, dur, settings), D = MF.CONST.MEDIA_D;
+    if (!MF) return null;
+    const dm = media && Array.isArray(media.danmaku) ? media.danmaku : null, heat = (media && media.heat) || null;
+    const X = (media && media.index) || MF.prepareMedia(dm || [], heat, dur, settings), D = MF.CONST.MEDIA_D;
     const rows = new Float32Array(L.length * D);
-    for (let i = 0; i < L.length; i++) MF.mediaAt(X, L[i].a, L[i].b, rows, i * D);
-    if (!Array.isArray(media.danmaku)) for (let i = 0; i < L.length; i++) rows.fill(NaN, i * D, i * D + DANMAKU_COLS);
+    const miss = new Set(dm && Array.isArray(dm.missingSegments) ? dm.missingSegments : []);
+    for (let i = 0; i < L.length; i++) {
+      MF.mediaAt(X, L[i].a, L[i].b, rows, i * D);
+      if (!dm || (miss.size && miss.has(Math.floor((L[i].a + L[i].b) / 2 / DM_SEGMENT) + 1))) rows.fill(NaN, i * D, i * D + DANMAKU_COLS);
+    }
     return rows;
+  }
+  /** The phrase-table line scores (S0) and the second stage's (S) of a prepared transcript, kept on it for this phrase
+   *  model, media object and duration (settings do not enter: the learned models read default-settings media). */
+  function scoresMemo(L, M, dur, settings, media, S0) {
+    const k = L.sMemo;
+    if (k && k.M === M && sameMedia(k.media, media) && k.dur === dur) return k;
+    if (!S0) S0 = lineScores(L, M);
+    return (L.sMemo = { M, media, dur, S0, S: scoresOf(L, M, dur, settings, media, S0) });
   }
   const sameMedia = (x, y) => (x || null) === (y || null);
   /** The network's line scores warm() left on this prepared transcript for this network, media and duration, or null. */
@@ -438,7 +452,8 @@
     const z = c ? c.z : NL.scores(N.net, L, dur, rows), p = new Float64Array(n);
     for (let i = 0; i < n; i++) p[i] = sigmoid(z[i]);
     // the scorer was fitted with the phrase-table / stack scores of each stretch as inputs (m.old)
-    const old = m.old ? { ps: Float64Array.from(scoresOf(L, M, dur, settings, media), sigmoid), p0: Float64Array.from(lineScores(L, M), sigmoid) } : null;
+    const k = m.old ? scoresMemo(L, M, dur, settings, media) : null;
+    const old = k ? { ps: Float64Array.from(k.S, sigmoid), p0: Float64Array.from(k.S0, sigmoid) } : null;
     const scored = (spans, sc) => spans.map(([i0, i1]) => ({ i0, i1, p: NL.probability(NL.features(p, L, dur, i0, i1, spans.length - 1, rows, m.mu, m.sd, old), sc) }));
     const main = scored(NL.stretches(p, L, m.dec), m.sc);
     const loose = scored(NL.stretches(p, L, m.loose || { hi: 0.5, lo: 0.3, w: 1, gap: 6, edge: 0.5 }), m.scLoose || m.sc)
@@ -460,7 +475,7 @@
       spans = r.main;
       for (const s of r.loose) rejected.push({ start: Math.round(L[s.i0].a * 10) / 10, end: Math.round(Math.min(dur || Infinity, L[s.i1].b) * 10) / 10, p: s.p, i0: s.i0, i1: s.i1 });
     } else {
-      const S = scoresOf(L, M, dur, settings, media);
+      const S = scoresMemo(L, M, dur, settings, media).S;
       spans = segment(L, S, P).map((span) => {
         const [i0, i1] = refine(L, M, span[0], span[1]);
         return { i0, i1, p: readProbability(M, readFeatures(L, S, P, i0, i1)) };
@@ -492,24 +507,28 @@
    * Skip button: the read playing at t — one the detector found or offered, or the weaker stretch around t now that the
    * viewer confirmed there is an ad. @returns {{end:number, start:number, reason:string, detected:boolean}|null}
    */
-  const lastRun = new WeakMap();   // prepared transcript → {M, duration, media, r}: a press does not rescore every line
+  const lastRun = new WeakMap();   // prepared transcript → {M, duration, media, nnz, r}: a press does not rescore every line
+  const END_AGREE = 30;            // the phrase path's end replaces the network read's only within this many seconds
   function readEndAt(lines, t, duration, media) {
     const L = prepare(lines, duration);
     if (!L.length || !isFinite(t)) return null;
     let run = lastRun.get(L);
-    if (!run || run.M !== model() || run.N !== BAS.nnModel || run.duration !== duration || !sameMedia(run.media, media)) {
+    // re-run when the network's scores appear (warm() finished after an earlier press) or change
+    if (!run || run.M !== model() || run.N !== BAS.nnModel || run.duration !== duration || !sameMedia(run.media, media) || run.nnz !== (L.nnz || null)) {
       // a press must answer at once: the network's scores only when warm() left them for this transcript
       const N = nnModel(), warmed = !!N && !!cachedNN(L, N, media, duration > 0 ? duration : L.duration);
-      lastRun.set(L, run = { M: model(), N: BAS.nnModel, duration, media, old: null, r: detectSubtitles(L, duration, undefined, media, warmed ? undefined : { phraseOnly: true }) });
+      lastRun.set(L, run = { M: model(), N: BAS.nnModel, duration, media, nnz: L.nnz || null, old: null, r: detectSubtitles(L, duration, undefined, media, warmed ? undefined : { phraseOnly: true }) });
     }
     const r = run.r;
     const at = (x) => t >= x.start - 3 && t < x.end - 2;
     const c = r.candidates.find(at);
     if (c) {
-      // with the neural model, the read is its; the end is the phrase-table path's when it has a stretch there (its end
-      // tables land within 3 s of the crowd's end more often on skip-button presses)
+      // with the neural model, the read is its; the end is the phrase-table path's when it has a stretch there that
+      // ends near the read's own end (its end tables land within 3 s of the crowd's end more often on skip-button
+      // presses), never one that runs on far past it or stops far short of it
       const o = nnModel() && run.r.nn ? (run.old ||= detectSubtitles(L, duration, undefined, media, { phraseOnly: true })) : null;
-      const oc = o && (o.candidates.find(at) || o.rejected.find((x) => at(x) && x.end - x.start >= 6 && x.p >= 0.15));
+      const near = (x) => at(x) && Math.abs(x.end - c.end) <= END_AGREE;
+      const oc = o && (o.candidates.find(near) || o.rejected.find((x) => near(x) && x.end - x.start >= 6 && x.p >= 0.15));
       return { end: oc ? oc.end : c.end, start: c.start, reason: c.reason, detected: !c.offerOnly };
     }
     const w = r.rejected.find((x) => at(x) && x.end - x.start >= 6 && x.p >= 0.15);
@@ -531,6 +550,7 @@
   detectSubtitles.readFeatures = readFeatures;
   detectSubtitles.readProbability = readProbability;
   detectSubtitles.readEndAt = readEndAt;
+  detectSubtitles.mediaRows = mediaRows;
   /**
    * The neural line scores of a transcript ahead of detectSubtitles, in a few short tasks (pause() between the
    * network's stages) instead of one long one. Returns the prepared transcript: pass it to detectSubtitles with the
@@ -540,7 +560,16 @@
     const L = prepare(lines, duration), N = nnModel();
     if (!N || !L.length || !model()) return L;
     const dur = duration > 0 ? duration : L.duration, rows = mediaRows(L, dur, settings, media);
-    L.nnz = { net: N.net, media, dur, rows, z: await BAS.nnLine.scoresAsync(N.net, L, dur, rows, pause) };
+    const z = await BAS.nnLine.scoresAsync(N.net, L, dur, rows, pause);
+    L.nnz = { net: N.net, media, dur, rows, z };
+    // the phrase-table / stack scores the stretch scorer reads, as two more short tasks
+    if (N.src.old) {
+      const M = model();
+      await pause();
+      const S0 = lineScores(L, M);
+      await pause();
+      scoresMemo(L, M, dur, settings, media, S0);
+    }
     return L;
   };
   detectSubtitles.nnStretches = (lines, duration, settings, media) => {

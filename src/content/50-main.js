@@ -49,6 +49,7 @@
     bridgeSubs: new Map(),     // cid(string) -> {list:[{lan,url}], signed} subtitle files listed in the player's own request
     subtitles: null,           // {cid, lines, lan} — prepared AI subtitle lines of the current video (skip button)
     subMedia: null,            // {cid, media} — the danmaku / heat the subtitle model read (the skip button re-uses it)
+    subLoad: null,             // {cid, p, signal} — the subtitle download in flight (a press joins it)
     binsCid: null,             // cid whose detection ran the danmaku / heat bin model (keyword edits re-use the decision)
     binsFor: null,             // cid that decision was made for
     heat: null,                // parsed 高能进度条 curve for the current video {step, values, events}
@@ -275,6 +276,7 @@
         if (!again) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
         r = Object.assign({}, again, { start: Math.min(again.start, r.start) });
       }
+      if (!stillHere()) return null;   // e.g. switched to another part (p=2) before state.video caught up
       try { v.currentTime = r.end; } catch (e) { return null; }
       BAS.log('skip-here', fmtTime(t), '->', fmtTime(r.end), r.source);
       const actions = [{ label: '撤销', onAction: () => { try { v.currentTime = t; } catch (e) { /* ignore */ } } }];
@@ -504,9 +506,19 @@
    * CDN. A file whose last line is far from the video's end belongs to another video and is ignored.
    * @returns {Promise<{lines: object[]|null, lan?: string, note: string}>}
    */
-  async function loadSubtitles(info, signal) {
+  function loadSubtitles(info, signal) {
     const cid = String(info.cid);
-    if (state.subtitles && state.subtitles.cid === cid) return { lines: state.subtitles.lines, lan: state.subtitles.lan, note: '已读取' };
+    if (state.subtitles && state.subtitles.cid === cid) return Promise.resolve({ lines: state.subtitles.lines, lan: state.subtitles.lan, note: '已读取' });
+    // a press during detection's own load joins it: one prepared transcript per video (the one warm() scores)
+    // (not one a superseded detection run started and has since cancelled)
+    if (state.subLoad && state.subLoad.cid === cid && !(state.subLoad.signal && state.subLoad.signal.aborted)) return state.subLoad.p;
+    const p = fetchSubtitles(info, signal, cid);
+    state.subLoad = { cid, p, signal };
+    const done = () => { if (state.subLoad && state.subLoad.p === p) state.subLoad = null; };
+    p.then(done, done);
+    return p;
+  }
+  async function fetchSubtitles(info, signal, cid) {
     let entry = state.bridgeSubs.get(cid);
     for (let waited = 0; !entry && waited < SUB_WAIT_MS; waited += 250) {
       await new Promise((r) => setTimeout(r, 250));
@@ -631,21 +643,28 @@
     // marks known from the cache survive a failed lookup during the hourly refresh
     const cachedCrowd = () => state.candidates.filter((c) => c.source === 'crowd');
 
+    // pauses of the subtitle task: a superseded run (navigation, re-detect) stops at the next one
+    const stillAlive = () => { if (!alive()) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; } };
+    const pause = () => yieldTask().then(stillAlive);
     const subtitleP = (async () => {
       if (!BAS.detectSubtitles || s.useSubtitles === false) return { candidates: [], note: '关闭' };
       const got = await loadSubtitles(info, ac.signal);
+      stillAlive();
       if (!got.lines) return { candidates: [], note: got.note, noLines: true };
       // the line model also reads the danmaku and the heat curve, which load alongside
       const [dmR, heatR] = await Promise.all([danmakuP, heatP]);
+      stillAlive();
       let media = null;
       if ((dmR.list || heatR) && BAS.mediaFeatures) {
         media = { danmaku: dmR.list || null, heat: heatR || null };
         media.index = BAS.mediaFeatures.prepareMedia(media.danmaku, media.heat, info.duration, s);
-        state.subMedia = { cid: String(info.cid), media };
-        await yieldTask();   // a long video's danmaku index, then its scoring, as separate tasks
+        await pause();   // a long video's danmaku index, then its scoring, as separate tasks
       }
-      // the neural line model's scores in short tasks first (a long transcript is ~0.3 s of arithmetic per 1000 lines)
-      const lines = BAS.detectSubtitles.warm ? await BAS.detectSubtitles.warm(got.lines, info.duration, s, media, yieldTask) : got.lines;
+      // what this run's model reads (also with none: the skip button must not pair the transcript with older media)
+      state.subMedia = { cid: String(info.cid), media };
+      // the neural line model's scores in short tasks first (a long transcript is ~0.4 s of arithmetic per 1000 lines)
+      const lines = BAS.detectSubtitles.warm ? await BAS.detectSubtitles.warm(got.lines, info.duration, s, media, pause) : got.lines;
+      stillAlive();
       const r = BAS.detectSubtitles(lines, info.duration, s, media);
       return { candidates: r.candidates, scored: true, note: `${got.lan} ${r.lines} 句→${r.candidates.length}${media ? '' : '（无弹幕）'}` };
     })().catch((e) => {

@@ -51,15 +51,18 @@
     const evidence = { candidate: null, targets: [], thanks: [], heat: null, chapter: null };
 
     // 1) an existing segment / candidate covering now
-    let cand = null;
+    let cand = null, subCand = null;
     const hasSubs = !!BAS.detectSubtitles && Array.isArray(c0.subtitles) && c0.subtitles.length > 0;
     for (const c of Array.isArray(c0.candidates) ? c0.candidates : []) {
       if (!c || c.end == null || !isFinite(+c.end) || !isFinite(+c.start)) continue;
-      // a read only the subtitle detector found: step 3 answers it, with the end tables' end (more often within 3 s)
-      if (hasSubs && (c.sources || [c.source]).every((x) => x === 'subtitle')) continue;
-      if (+c.start - 5 <= t && t < +c.end - 1 && +c.end >= lo && +c.end <= hi + 1) {
-        if (!cand || (+c.confidence || 0) > (+cand.confidence || 0)) cand = c;
+      if (!(+c.start - 5 <= t && t < +c.end - 1 && +c.end >= lo && +c.end <= hi + 1)) continue;
+      // a read only the subtitle detector found: step 3 answers it, with the end tables' end (more often within 3 s);
+      // kept in case step 3 cannot (scores from the cache, a transcript not scored yet)
+      if (hasSubs && (c.sources || [c.source]).every((x) => x === 'subtitle')) {
+        if (!subCand || (+c.confidence || 0) > (+subCand.confidence || 0)) subCand = c;
+        continue;
       }
+      if (!cand || (+c.confidence || 0) > (+cand.confidence || 0)) cand = c;
     }
 
     // 2/4) danmaku around now
@@ -130,6 +133,7 @@
       try { read = BAS.detectSubtitles.readEndAt(c0.subtitles, t, isFinite(dur) ? dur : 0, c0.media || null); } catch (e) { read = null; }
       if (read && !(read.end >= lo && read.end <= hi + 1)) read = null;
     }
+    if (!read && subCand) read = { end: +subCand.end, start: +subCand.start, reason: subCand.reason || '字幕：口播', detected: !subCand.offerOnly };
     // 7) next chapter boundary
     const nextBoundary = (Array.isArray(c0.boundaries) ? c0.boundaries : []).filter((b) => isFinite(b) && b >= lo && b <= hi).sort((a, b) => a - b)[0];
 

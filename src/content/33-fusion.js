@@ -177,6 +177,7 @@
         if (c.source !== 'danmaku' && c.source !== 'subtitle') { rest.push(c); continue; }
         let host = null, strong = false;
         for (const ch of chapters) {
+          if (ch._absorbed) continue;
           if (c.end === null) {
             if (c.start >= ch.start - BOUNDARY_SNAP_SEC && c.start < ch.end) { host = ch; break; }
           } else {
@@ -184,6 +185,16 @@
             if (len > 0 && o / len > CHAPTER_MERGE_FRACTION) { host = ch; strong = true; break; }
             if (ch.source === 'crowd' && o > 0 && (c.offerOnly || c.confidence < minConfFuse)) { host = ch; break; }
           }
+        }
+        // A disputed crowd mark (offer-only) does not take over an estimate that would auto-skip on its own: the
+        // estimate keeps its own span and takes the mark in as corroboration instead.
+        if (host && strong && host.source === 'crowd' && host.offerOnly && !c.offerOnly && c.confidence >= minConfFuse) {
+          host._absorbed = true;
+          addSources(c, host.sources);
+          if (!c.reason.includes(' · 众包标记（有争议）')) c.reason += ' · 众包标记（有争议）';
+          c.evidence.crowd = { start: host.start, end: host.end, confidence: host.confidence, reason: host.reason };
+          rest.push(c);
+          continue;
         }
         if (!host) { rest.push(c); continue; }
         addSources(host, c.sources);
@@ -198,7 +209,11 @@
         const key = c.source === 'subtitle' ? 'subtitle' : 'danmaku';
         host.evidence[key] = (Array.isArray(host.evidence[key]) ? host.evidence[key] : []).concat([{ start: c.start, end: c.end, confidence: c.confidence, reason: c.reason }]);
       }
-      cands = rest;
+      cands = rest.filter((c) => {
+        if (!c._absorbed) return true;
+        drop(c, '有争议的众包标记，已并入独立识别的片段');
+        return false;
+      });
     }
     // A transcript read does the same for danmaku estimates around it: a weak or offer-only estimate never lends the
     // read's confidence to a longer span; one that is itself confident and agrees (IoU ≥ 0.5) may widen it.

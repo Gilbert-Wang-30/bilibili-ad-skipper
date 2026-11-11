@@ -37,9 +37,10 @@
       soft[i + 1] = soft[i] + (c && (c.startClass === 'moment' || c.startClass === 'bare' || c.startClass === 'weak') ? 1 : 0);
       if (c && Array.isArray(c.targets)) for (const x of c.targets) if (x && isFinite(x.target) && !x.poi) cues.push([d.t, +x.target, !!x.weak]);
     }
-    // the hand-written detector's segments (confidence, offer-only halved)
+    // the hand-written detector's segments (confidence, offer-only halved), with the default settings the learned
+    // models were trained on: the viewer's extra keywords change the danmaku detector, not these columns
     let segs = [];
-    try { segs = D ? (D(list, dur, settings || BAS.DEFAULT_SETTINGS).candidates || []) : []; } catch (e) { segs = []; }
+    try { segs = D ? (D(list, dur, BAS.DEFAULT_SETTINGS || settings).candidates || []) : []; } catch (e) { segs = []; }
     let ha = null;
     try { ha = heat && BAS.detectHeat ? BAS.detectHeat.analyse(heat, dur) : null; } catch (e) { ha = null; }
     return { dur, n, t, vocab, endW, ann, soft, cues, segs, heat: heat || null, ha };

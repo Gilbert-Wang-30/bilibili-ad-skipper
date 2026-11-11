@@ -243,7 +243,7 @@ so the leak is small. The held-out test is clean (its videos were never used for
 | Popular videos: auto-skips from the subtitles (+ 4 from the unchanged danmaku / heat model in both) | 49 (51 of all 53 real) | **52, 50 a real paid read** (1 the creator's own books, 1 a video about becoming a brand ambassador) |
 | … blind sample (160 videos read in full): sponsor reads auto-skipped | 19 / 35 | 19 / 35 |
 | Skip button (936 held-out presses): lands within 3 s of the labelled end | 75 % (81 % with a transcript) | **76 %** (82 %; where its end comes from was chosen on these same presses) |
-| Scoring time, longest transcripts (in short tasks) | ~0.06 s per 1 000 lines | ~0.33 s per 1 000 lines |
+| Scoring time, longest transcripts (in short tasks) | ~0.06 s per 1 000 lines | ~0.4 s per 1 000 lines; no task over ~40 ms at 3 000 lines (v4.0.2) |
 
 For scale: on held-out set B (214 of those videos, 174 crowd ads), v4 auto-skips 135 (77.6 %; 139 with the XML danmaku);
 the language-model design of v1.0.0 (an LLM reading the transcript through an API, since removed) skipped 164 (94.3 %).

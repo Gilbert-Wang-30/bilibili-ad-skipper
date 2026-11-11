@@ -297,7 +297,9 @@ Step E — merge overlapping candidates (keep the higher confidence, union the r
 
 1. Drop candidates from disabled sources (`useChapters`, `useDanmaku`).
 2. Chapter candidates are authoritative: any danmaku candidate overlapping a chapter candidate (> 40 % of itself) is merged into it (sources += 'danmaku').
-   Crowd marks (§7.8) are hosts the same way, for danmaku and subtitle candidates. Then each remaining subtitle read
+   Crowd marks (§7.8) are hosts the same way, for danmaku and subtitle candidates — except that a disputed (offer-only)
+   mark does not host an estimate that would auto-skip on its own (≥ minConfidence, not offer-only): the estimate keeps
+   its span and takes the mark in as a source (the mark goes to `diagnostics.dropped`). Then each remaining subtitle read
    (§7.9) hosts the danmaku candidates overlapping it: absorbed without changing its edges, except a confident one
    (≥ minConfidence, not offer-only) with IoU ≥ 0.5, which widens it to the union (+0.05).
 3. For danmaku candidates: snap `start` to the nearest chapter `boundary` within 10 s; else to the strongest `media.nearestCut(start, 4)`.
@@ -524,9 +526,10 @@ rows)`: per line, the mean and max over its first 48 UTF-16 units of (character 
 length, log pause before / after, position, reading speed, log characters, log video length) and the 19 `mediaAt`
 columns normalised by the training means (clipped to ±5) → linear + GELU (128) → two bidirectional GRU layers (128 per
 direction) → linear → log-odds. Weights int8 with a float scale per row (`to_js`-style JSON in 26-nn-model.js), unpacked
-once. 50-main.js computes the scores ahead with `detectSubtitles.warm(lines, dur, settings, media, yieldTask)` (the
-network's five stages as separate tasks; cached on the prepared transcript for that network, media object and
-duration). Decoder `nnLine.stretches(p, L, dec)`: p smoothed over ±`w` lines; a read starts at a line with smoothed p ≥
+once. 50-main.js computes the scores ahead with `detectSubtitles.warm(lines, dur, settings, media, pause)`: the
+network's work in slices of about 25 ms (`scoresAsync` awaits `pause()` between them), then the phrase-table and stack
+scores the scorer reads as two more tasks; all cached on the prepared transcript for that network, media object and
+duration. The pause throws when the detection run was superseded (navigation, re-detect), which stops the work there. Decoder `nnLine.stretches(p, L, dec)`: p smoothed over ±`w` lines; a read starts at a line with smoothed p ≥
 `hi` and extends while ≥ `lo`; runs closer than `gap` s merge; edges are trimmed to lines with p ≥ `edge`, or, when that
 keeps less than `keep` of the stretch, to lines with p ≥ `eLo`; ≥ 8 s. Scorer: logistic over 77 columns (mean / max /
 min / median / share > 0.5 / > 0.9 / logit of the stretch's line p, log length, log lines, position, the p of the 10
@@ -537,9 +540,10 @@ before) → p; accept as in step 6 with the model's own `auto` (0.75) / `offer` 
 
 `readEndAt(lines, t, duration, media)`: the accepted read containing t → its end; else a rejected stretch with p ≥ 0.15 and
 ≥ 6 s containing t (`detected: false`) (`findAdEnd` source `subtitle`). With the neural path, an accepted read's end is
-the phrase-table path's stretch end when that path has a stretch containing t (its end tables land within 3 s more
-often: 82 % vs 77 % of presses on videos with a transcript). The detection is kept per prepared transcript,
-so a press does not rescore it. Following the talk forward without a read was
+the phrase-table path's stretch end when that path has a stretch containing t that ends within 30 s of the read's end
+(its end tables land within 3 s more often: 82 % vs 77 % of presses on videos with a transcript; a phrase stretch that
+runs on far past the read, or stops far short of it, is not used). The detection is kept per prepared transcript, so a
+press does not rescore it, and redone once `warm()` has left scores for that transcript after an earlier press. Following the talk forward without a read was
 measured worse than the blind step and is not done.
 
 Measured (README "Accuracy" → "Neural line model"): cross-validated by uploader on the 8 112 training videos 84.3 % of
@@ -548,17 +552,22 @@ content when every teacher target comes from a copy that never saw the tested fo
 videos with a transcript 77.0 % from the subtitle model (v3: 74.7 %), no auto-skip on unlabeled content. The scorer's
 standardised columns are clipped to ±5 (fitted the same way), so a column that was nearly constant in training cannot
 decide a stretch; loose (skip-button) stretches have their own scorer (`scLoose`). Without a danmaku list (danmaku off or
-not loaded) the network and the scorer read the danmaku columns (mediaAt 0–13) as unknown (training mean); a video
-nobody commented on is still 0. `readEndAt` uses the network only when `warm()` left its scores for that transcript,
-media and duration (else the phrase-table path): a press never runs the network. `findAdEnd` step 1 skips reads only
-the subtitle detector found when the transcript is at hand: step 3 answers them with the end tables' end.
+not loaded), and for lines in danmaku segments (360 s each) that failed to load, the network and the scorer read the
+danmaku columns (mediaAt 0–13) as unknown (training mean); a video nobody commented on is still 0. Without a heat curve
+the heat columns (14–18) are 0, the training encoding of "no curve", whether or not the danmaku loaded. `readEndAt`
+uses the network only when `warm()` left its scores for that transcript, media and duration (else the phrase-table
+path): a press never runs the network. `findAdEnd` step 1 skips reads only the subtitle detector found when the
+transcript is at hand: step 3 answers them with the end tables' end, or, when it has no answer there (results from the
+cache, a transcript not scored yet), the read's own end. 50-main.js downloads a video's subtitles once at a time (a
+press during detection joins detection's download) and records the media its last run read even when there is none.
 
 ### 7.10 Danmaku / heat features and the bin model — `BAS.mediaFeatures` (29-media-features.js)
 
 Pure. `prepareMedia(danmaku, heat, duration, settings)` indexes a video's danmaku (time and text only — the models were
 trained on the danmaku XML pool, which has no `airborne` actions): each classified once with `detectDanmaku.classify`
 (§7.2: jump cues and their targets, ad announcements, sponsor words, landing thanks), plus the hand-written detector's
-segments and `detectHeat.analyse`. `mediaAt(X, a, b, out, off)` writes 19 numbers for the moment [a, b]: danmaku count,
+segments (run with the default settings the learned models were trained on: the viewer's extra keywords change the
+danmaku detector's own candidates, not these columns) and `detectHeat.analyse`. `mediaAt(X, a, b, out, off)` writes 19 numbers for the moment [a, b]: danmaku count,
 local density against the video's rate, ad vocabulary in ±30 s and the 90 s before, jump cues posted up to 240 s
 before that point past the moment (by / without weak targets), jump targets landing within ±15 s, landing thanks in the
 60 s after / before, announcements, soft words, the hand-written detector's confidence there (offer-only halved), whether

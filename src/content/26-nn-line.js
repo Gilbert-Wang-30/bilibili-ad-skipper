@@ -10,7 +10,7 @@
  * trimmed to lines the model is sure of; each stretch scored by a logistic over its statistics, the danmaku / heat
  * inside and around it and the phrase-table scores.
  *   const net = BAS.nnLine.load(json); BAS.nnLine.scores(net, lines, duration, mediaRows) → Float32Array of logits
- *   (scoresAsync(…, pause): the same in stages, awaiting pause() between them)
+ *   (scoresAsync(…, pause): the same in slices of at most ~SLICE_MS of work, awaiting pause() between them)
  *   BAS.nnLine.stretches(p, lines, dec) → [[i0, i1], …]; features(…) → row; probability(row, scorer) → p
  */
 (() => {
@@ -44,8 +44,11 @@
   const gelu = (x) => 0.5 * x * (1 + erf(x / Math.SQRT2));
   const sig = (x) => 1 / (1 + Math.exp(-x));
 
+  // The generators below yield every STEP rows / steps (a few ms of work): scoresAsync pauses at the first yield after
+  // SLICE_MS, so a long transcript never blocks the page for long; scores() runs straight through.
+  const STEP = 64, SLICE_MS = 25;
   /** y[n × W.r] = x[n × W.c] · Wᵀ + b */
-  function linear(x, n, W, b) {
+  function* linear(x, n, W, b) {
     const R = W.r, Cc = W.c, w = W.w, y = new Float32Array(n * R);
     for (let i = 0; i < n; i++) {
       const xo = i * Cc, yo = i * R;
@@ -54,14 +57,16 @@
         for (let j = 0; j < Cc; j++) s += w[wo + j] * x[xo + j];
         y[yo + r] = s;
       }
+      if (i % STEP === STEP - 1) yield;
     }
     return y;
   }
   /** One GRU direction over n steps; x[n × in] → writes h into out[n × outStride] at column off. */
-  function gru(x, n, T, sfx, out, outStride, off, reverse) {
+  function* gru(x, n, T, sfx, out, outStride, off, reverse) {
     const Wi = T['rnn.weight_ih_' + sfx], Wh = T['rnn.weight_hh_' + sfx], bi = T['rnn.bias_ih_' + sfx], bh = T['rnn.bias_hh_' + sfx];
-    const H = Wh.c, gi = linear(x, n, Wi, bi), h = new Float32Array(H), gh = new Float32Array(3 * H), w = Wh.w;
+    const H = Wh.c, gi = yield* linear(x, n, Wi, bi), h = new Float32Array(H), gh = new Float32Array(3 * H), w = Wh.w;
     for (let k = 0; k < n; k++) {
+      if (k % STEP === STEP - 1) yield;
       const t = reverse ? n - 1 - k : k, go = t * 3 * H;
       for (let r = 0; r < 3 * H; r++) { let s = bh.w[r]; const wo = r * H; for (let j = 0; j < H; j++) s += w[wo + j] * h[j]; gh[r] = s; }
       for (let j = 0; j < H; j++) {
@@ -74,7 +79,7 @@
   }
   const hash2 = (u1, u2, bits) => ((Math.imul(u1, 0x9E3779B1 | 0) ^ Math.imul(u2, 0x85EBCA77 | 0)) >>> (32 - bits)) + 1;
 
-  /** Logit per line, computed in stages: the generator pauses after the line vectors and after each GRU pass. */
+  /** Logit per line, computed in stages: the generator yields every few ms of work (see STEP). */
   function* stages(net, lines, duration, media) {
     const { cfg, T, vocab } = net, n = lines.length, E = cfg.emb, Cmax = cfg.chars, bits = cfg.bits;
     if (!n) return new Float32Array(0);
@@ -100,20 +105,21 @@
         X[o + 2 * E + 8 + k] = Math.max(-5, Math.min(5, (m - net.mu[k]) / net.sd[k]));
       }
       if (cfg.s0) X[o + D - 1] = Math.max(-4, Math.min(4, (l.s0 || 0) / 4));
+      if (i % (4 * STEP) === 4 * STEP - 1) yield;
     }
-    let h = linear(X, n, T['inp.weight'], T['inp.bias']);
+    let h = yield* linear(X, n, T['inp.weight'], T['inp.bias']);
     for (let i = 0; i < h.length; i++) h[i] = gelu(h[i]);
     const H = T['inp.weight'].r;
     yield;
     for (let layer = 0; layer < cfg.layers; layer++) {
       const out = new Float32Array(n * 2 * H);
-      gru(h, n, T, 'l' + layer, out, 2 * H, 0, false);
+      yield* gru(h, n, T, 'l' + layer, out, 2 * H, 0, false);
       yield;
-      gru(h, n, T, 'l' + layer + '_reverse', out, 2 * H, H, true);
+      yield* gru(h, n, T, 'l' + layer + '_reverse', out, 2 * H, H, true);
       yield;
       h = out;
     }
-    return linear(h, n, T['out.weight'], T['out.bias']);
+    return yield* linear(h, n, T['out.weight'], T['out.bias']);
   }
   /** Logit per line (in one go). */
   function scores(net, lines, duration, media) {
@@ -122,11 +128,13 @@
     while (!(r = g.next()).done);
     return r.value;
   }
-  /** The same, awaiting pause() between the stages (a long transcript as several short tasks instead of one long one). */
+  const now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+  /** The same, awaiting pause() whenever ~SLICE_MS of work has run (a long transcript as many short tasks). pause() may
+   *  throw (e.g. the run was superseded): the computation stops there. */
   async function scoresAsync(net, lines, duration, media, pause) {
     const g = stages(net, lines, duration, media);
-    let r;
-    while (!(r = g.next()).done) await pause();
+    let r, t0 = now();
+    while (!(r = g.next()).done) if (now() - t0 >= SLICE_MS) { await pause(); t0 = now(); }
     return r.value;
   }
 
