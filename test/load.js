@@ -8,6 +8,8 @@ const PURE_MODULES = [
   '10-storage.js',
   '20-protobuf.js',
   '21-wbi.js',
+  '26-nn-line.js',
+  '26-nn-model.js',
   '27-subtitle-model.js',
   '28-detect-subtitles.js',
   '29-media-features.js',

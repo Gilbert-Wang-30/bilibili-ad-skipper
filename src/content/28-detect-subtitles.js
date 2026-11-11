@@ -1,6 +1,10 @@
 /* Bilibili Ad Skipper — sponsor reads found in the video's AI subtitles (what the uploader says).
  *
- * No AI and nothing sent anywhere: every subtitle line gets a score from a table of phrase weights (27-subtitle-model.js,
+ * No AI service and nothing sent anywhere. With the neural line model (26-nn-line.js, weights in 26-nn-model.js: a
+ * small network trained offline, plain arithmetic here) each line gets the probability that it belongs to a read from
+ * its characters, timing and the danmaku / heat at that moment in the context of the whole video; reads are decoded from
+ * those probabilities and each stretch is scored with them and with the phrase-table / tree scores below (detectSubtitles
+ * neural path). Without it (and as inputs to it): every subtitle line gets a score from a table of phrase weights (27-subtitle-model.js,
  * counted from thousands of crowd-labelled videos — how much more often a phrase is said inside a marked ad than outside
  * one), plus a few things about the line itself (where it sits in the video, how fast it is read, whether it repeats a
  * name that is said nowhere else in the video — the product). Boosted decision trees (also plain numbers in
@@ -398,19 +402,64 @@
    * @param {{danmaku?: object[], heat?: object}} [media]  the video's danmaku ([{t, text}]) and parsed heat curve, if known
    * @returns {{candidates: object[], rejected: object[], lines: number}}
    */
-  function detectSubtitles(lines, duration, settings, media) {
+  // The neural line model (26-nn-line.js + 26-nn-model.js), loaded once: its weights are unpacked on first use.
+  let nnCache = null;
+  function nnModel() {
+    const m = BAS.nnModel;
+    if (!m || !BAS.nnLine || !m.net) return null;
+    if (!nnCache || nnCache.src !== m) {
+      try { nnCache = { src: m, net: BAS.nnLine.load(m.net) }; } catch (e) { nnCache = { src: m, net: null }; }
+    }
+    return nnCache.net ? nnCache : null;
+  }
+  /** The danmaku / heat columns of every line (Float32Array n × MEDIA_D), or null without them. */
+  function mediaRows(L, dur, settings, media) {
+    const MF = BAS.mediaFeatures;
+    if (!MF || !media || !(Array.isArray(media.danmaku) || media.heat)) return null;
+    const X = media.index || MF.prepareMedia(media.danmaku || [], media.heat || null, dur, settings), D = MF.CONST.MEDIA_D;
+    const rows = new Float32Array(L.length * D);
+    for (let i = 0; i < L.length; i++) MF.mediaAt(X, L[i].a, L[i].b, rows, i * D);
+    return rows;
+  }
+  /** The neural path's stretches: [{i0, i1, p}] read probabilities, and looser ones for the skip button. */
+  function nnStretches(L, M, N, dur, settings, media) {
+    const NL = BAS.nnLine, m = N.src, n = L.length;
+    // line scores computed ahead by warm() for this network, media and duration, else now
+    const c = L.nnz && L.nnz.net === N.net && L.nnz.media === media && L.nnz.dur === dur ? L.nnz : null;
+    const rows = c ? c.rows : mediaRows(L, dur, settings, media);
+    const z = c ? c.z : NL.scores(N.net, L, dur, rows), p = new Float64Array(n);
+    for (let i = 0; i < n; i++) p[i] = sigmoid(z[i]);
+    // the scorer was fitted with the phrase-table / stack scores of each stretch as inputs (m.old)
+    const old = m.old ? { ps: Float64Array.from(scoresOf(L, M, dur, settings, media), sigmoid), p0: Float64Array.from(lineScores(L, M), sigmoid) } : null;
+    const scored = (spans) => spans.map(([i0, i1]) => ({ i0, i1, p: NL.probability(NL.features(p, L, dur, i0, i1, spans.length - 1, rows, m.mu, m.sd, old), m.sc) }));
+    const main = scored(NL.stretches(p, L, m.dec));
+    const loose = scored(NL.stretches(p, L, m.loose || { hi: 0.5, lo: 0.3, w: 1, gap: 6, edge: 0.5 }))
+      .filter((s) => !main.some((t) => s.i0 <= t.i1 && t.i0 <= s.i1));
+    return { main, loose };
+  }
+
+  function detectSubtitles(lines, duration, settings, media, opts) {
     const M = model();
     const L = prepare(lines, duration);
     if (!L.length || !M) return { candidates: [], rejected: [], lines: L.length };
     const dur = duration > 0 ? duration : L.duration;
-    const P = M.params;
-    const S = scoresOf(L, M, dur, settings, media);
+    const N = opts && opts.phraseOnly ? null : nnModel();
+    const P = N ? Object.assign({}, M.params, N.src.params) : M.params;
     const out = [], rejected = [];
-    for (const span of segment(L, S, P)) {
-      const [i0, i1] = refine(L, M, span[0], span[1]);
+    let spans;
+    if (N) {
+      const r = nnStretches(L, M, N, dur, settings, media);
+      spans = r.main;
+      for (const s of r.loose) rejected.push({ start: Math.round(L[s.i0].a * 10) / 10, end: Math.round(Math.min(dur || Infinity, L[s.i1].b) * 10) / 10, p: s.p, i0: s.i0, i1: s.i1 });
+    } else {
+      const S = scoresOf(L, M, dur, settings, media);
+      spans = segment(L, S, P).map((span) => {
+        const [i0, i1] = refine(L, M, span[0], span[1]);
+        return { i0, i1, p: readProbability(M, readFeatures(L, S, P, i0, i1)) };
+      });
+    }
+    for (const { i0, i1, p } of spans) {
       const start = L[i0].a, end = Math.min(dur || Infinity, L[i1].b), len = end - start;
-      const x = readFeatures(L, S, P, i0, i1);
-      const p = readProbability(M, x);
       const item = { start: Math.round(start * 10) / 10, end: Math.round(end * 10) / 10, p, i0, i1 };
       if (len < MIN_LEN || len > MAX_LEN || p < P.offer) { rejected.push(item); continue; }
       const auto = p >= P.auto;
@@ -440,11 +489,20 @@
     const L = prepare(lines, duration);
     if (!L.length || !isFinite(t)) return null;
     let run = lastRun.get(L);
-    if (!run || run.M !== model() || run.duration !== duration || run.media !== media) lastRun.set(L, run = { M: model(), duration, media, r: detectSubtitles(L, duration, undefined, media) });
+    if (!run || run.M !== model() || run.N !== BAS.nnModel || run.duration !== duration || run.media !== media) {
+      lastRun.set(L, run = { M: model(), N: BAS.nnModel, duration, media, r: detectSubtitles(L, duration, undefined, media), old: null });
+    }
     const r = run.r;
-    const c = r.candidates.find((x) => t >= x.start - 3 && t < x.end - 2);
-    if (c) return { end: c.end, start: c.start, reason: c.reason, detected: !c.offerOnly };
-    const w = r.rejected.find((x) => t >= x.start - 3 && t < x.end - 2 && x.end - x.start >= 6 && x.p >= 0.15);
+    const at = (x) => t >= x.start - 3 && t < x.end - 2;
+    const c = r.candidates.find(at);
+    if (c) {
+      // with the neural model, the read is its; the end is the phrase-table path's when it has a stretch there (its end
+      // tables land within 3 s of the crowd's end more often on skip-button presses)
+      const o = nnModel() ? (run.old ||= detectSubtitles(L, duration, undefined, media, { phraseOnly: true })) : null;
+      const oc = o && (o.candidates.find(at) || o.rejected.find((x) => at(x) && x.end - x.start >= 6 && x.p >= 0.15));
+      return { end: oc ? oc.end : c.end, start: c.start, reason: c.reason, detected: !c.offerOnly };
+    }
+    const w = r.rejected.find((x) => at(x) && x.end - x.start >= 6 && x.p >= 0.15);
     if (w) return { end: w.end, start: w.start, reason: `字幕：可能的口播（${Math.round(w.p * 100)}%）`, detected: false };
     return null;
   }
@@ -463,6 +521,22 @@
   detectSubtitles.readFeatures = readFeatures;
   detectSubtitles.readProbability = readProbability;
   detectSubtitles.readEndAt = readEndAt;
+  /**
+   * The neural line scores of a transcript ahead of detectSubtitles, in a few short tasks (pause() between the
+   * network's stages) instead of one long one. Returns the prepared transcript: pass it to detectSubtitles with the
+   * same duration and media object to reuse the scores.
+   */
+  detectSubtitles.warm = async (lines, duration, settings, media, pause) => {
+    const L = prepare(lines, duration), N = nnModel();
+    if (!N || !L.length || !model()) return L;
+    const dur = duration > 0 ? duration : L.duration, rows = mediaRows(L, dur, settings, media);
+    L.nnz = { net: N.net, media, dur, rows, z: await BAS.nnLine.scoresAsync(N.net, L, dur, rows, pause) };
+    return L;
+  };
+  detectSubtitles.nnStretches = (lines, duration, settings, media) => {
+    const M = model(), N = nnModel(), L = prepare(lines, duration);
+    return M && N && L.length ? nnStretches(L, M, N, duration > 0 ? duration : L.duration, settings, media) : null;
+  };
   detectSubtitles.CONST = { WINDOW, BURST_NEAR, BURST_FAR, NOVEL_FAR, MIN_LEN, MAX_LEN, READ_CTX, MAX_NEAR, MAX_CHARS, STACK_D };
   BAS.detectSubtitles = detectSubtitles;
 })();

@@ -644,7 +644,9 @@
         state.subMedia = { cid: String(info.cid), media };
         await yieldTask();   // a long video's danmaku index, then its scoring, as separate tasks
       }
-      const r = BAS.detectSubtitles(got.lines, info.duration, s, media);
+      // the neural line model's scores in short tasks first (a long transcript is ~0.3 s of arithmetic per 1000 lines)
+      const lines = BAS.detectSubtitles.warm ? await BAS.detectSubtitles.warm(got.lines, info.duration, s, media, yieldTask) : got.lines;
+      const r = BAS.detectSubtitles(lines, info.duration, s, media);
       return { candidates: r.candidates, scored: true, note: `${got.lan} ${r.lines} 句→${r.candidates.length}${media ? '' : '（无弹幕）'}` };
     })().catch((e) => {
       if (e && e.name === 'AbortError') return { candidates: [], note: '已取消', failed: true };

@@ -43,19 +43,32 @@ Deno.test('detectSubtitles: a passing mention, a product review and a sale guide
   assertEquals(D(review, 600).candidates.length, 0);
 });
 
+// the same kind of read for other products (a video with several sponsors names a different one each time)
+const PRODUCTS = ['小象家的电动牙刷', '大熊牌的空气炸锅', '山猫家的机械键盘', '海豚牌的扫地机器人', '云朵家的乳胶枕'];
+const readFor = (name) => READ.map(([t, x]) => [t, x.replace('小象家的电动牙刷', name).replace('小象家电动牙刷', name.replace('的', '')).replace('小象家这款', name.slice(0, 3) + '这款')]);
+
 Deno.test('detectSubtitles: a video that sells from start to end is never auto-skipped', () => {
-  // the read above, k times, 200 s apart: four reads are four ads; a fifth makes it a shopping video (> maxReads)
+  // k reads for k products, 200 s apart: four reads are four ads; a fifth makes it a shopping video (> maxReads)
   const video = (k) => {
     const rows = []; let t = 0;
-    for (let r = 0; r < k; r++) { const t0 = 100 + r * 200; rows.push(...filler(t, t0 - 2), ...READ.map(([d, x]) => [d - 300 + t0, x])); t = t0 + 24; }
+    for (let r = 0; r < k; r++) { const t0 = 100 + r * 200; rows.push(...filler(t, t0 - 2), ...readFor(PRODUCTS[r]).map(([d, x]) => [d - 300 + t0, x])); t = t0 + 24; }
     return body(rows.concat(filler(t, 1200)));
   };
-  const four = D(video(4), 1200).candidates;
+  // the caps themselves: every read found counts as an auto read here (auto threshold pinned at the offer threshold)
+  const M = BAS.subtitleModel, N = BAS.nnModel;
+  let four, five;
+  try {
+    BAS.subtitleModel = Object.assign({}, M, { params: Object.assign({}, M.params, { auto: M.params.offer }) });
+    if (N) BAS.nnModel = Object.assign({}, N, { params: Object.assign({}, N.params, { auto: N.params.offer }) });
+    four = D(video(4), 1200).candidates;
+    five = D(video(5), 1200).candidates;
+  } finally { BAS.subtitleModel = M; BAS.nnModel = N; }
   assertEquals(four.length, 4);
   assert(four.every((c) => !c.offerOnly && c.confidence >= 0.75), JSON.stringify(four.map((c) => [c.start, c.offerOnly, c.confidence])));
-  const five = D(video(5), 1200).candidates;
   assertEquals(five.length, 5);
   assert(five.every((c) => c.offerOnly && c.confidence <= 0.5 && /整期像带货/.test(c.reason)), JSON.stringify(five.map((c) => [c.start, c.offerOnly, c.confidence])));
+  // with the shipped thresholds, a clear read among them is still auto-skipped
+  assert(D(video(4), 1200).candidates.some((c) => !c.offerOnly), 'at least one of four clear reads auto-skipped');
   // one read that is over 40 % of a short video: also only offered
   const short = D(body([].concat(filler(0, 18), READ.map(([t, x]) => [t - 280, x]), filler(44, 46))), 46).candidates;
   assertEquals(short.length, 1);
@@ -75,12 +88,13 @@ Deno.test('readEndAt: the end of the read playing now; nothing outside a read', 
   assert(atEnd(r.end) && r.detected, JSON.stringify(r));
   assertEquals(D.readEndAt(L, 600, 900), null);
   // a press reuses the detection, but not across a different model or duration
-  const M = BAS.subtitleModel;
+  const M = BAS.subtitleModel, N = BAS.nnModel;
   try {
     BAS.subtitleModel = Object.assign({}, M, { params: Object.assign({}, M.params, { auto: 1.01 }) });
+    if (N) BAS.nnModel = Object.assign({}, N, { params: Object.assign({}, N.params, { auto: 1.01 }) });
     const offered = D.readEndAt(L, 310, 900);
     assert(offered && atEnd(offered.end) && offered.detected === false, JSON.stringify(offered));
-  } finally { BAS.subtitleModel = M; }
+  } finally { BAS.subtitleModel = M; BAS.nnModel = N; }
   assert(D.readEndAt(L, 310, 900).detected);
   assertEquals(D.readEndAt(L, 310, 315).end, 315);   // a shorter video: the read is cut at its end
 });

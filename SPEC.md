@@ -65,6 +65,8 @@ src/content/10-storage.js         settings + per-video overrides + result cache
 src/content/20-protobuf.js        BAS.decodeDmSeg(ArrayBuffer|Uint8Array) → Danmaku[]
 src/content/21-wbi.js             BAS.wbi.sign(params, imgKey, subKey) + md5
 src/content/22-api.js             BAS.api.*
+src/content/26-nn-line.js         BAS.nnLine: neural line model forward pass + stretch decoder / scorer (§7.9)
+src/content/26-nn-model.js        BAS.nnModel: its weights (int8), character list, decoder and scorer settings (generated, §7.9)
 src/content/27-subtitle-model.js  BAS.subtitleModel: weight tables + boosted trees of the subtitle detector and the bin model (generated, §7.9, §7.10)
 src/content/28-detect-subtitles.js BAS.detectSubtitles() (§7.9)
 src/content/29-media-features.js  BAS.mediaFeatures: danmaku / heat features, the bin model for videos without subtitles (§7.10)
@@ -475,7 +477,7 @@ unsigned player listing: `max(30, 10 %)`) is another video's and is ignored. Set
 failed download keeps the reads already known from the cache and is never cached as "no reads" (with no such reads
 the run is not cached).
 
-No AI, no network: the model `BAS.subtitleModel` (27-subtitle-model.js, generated, ~3 MB, a JSON string parsed at load)
+No AI service, no network: the model `BAS.subtitleModel` (27-subtitle-model.js, generated, ~3 MB, a JSON string parsed at load)
 is a set of static numbers fitted offline on 8 112 crowd-labelled videos (BilibiliSponsorBlock sponsor marks + the
 videos' AI subtitles, danmaku and heat curves; cross-validated by uploader): weight tables (logistic regression) and
 gradient-boosted decision trees (each tree a few comparisons ending in a number; a score is the sum of the numbers
@@ -516,14 +518,33 @@ Algorithm:
 7. More than `maxReads` (4) auto reads, or auto reads covering > `maxShare` (40 %) of the video: all offer-only, ≤ 0.5
    (a shopping video). An offered segment's button names its source (字幕建议跳过 / 弹幕建议跳过 / 众包建议跳过).
 
+**Neural path (v4, when `BAS.nnModel` and `BAS.nnLine` are loaded; else steps 3–6 above).** `nnLine.scores(net, L, dur,
+rows)`: per line, the mean and max over its first 48 UTF-16 units of (character vector + hashed character-pair vector;
+64 numbers each, the pair hashed as `(imul(u1, 0x9E3779B1) ^ imul(u2, 0x85EBCA77)) >>> 17`), 8 timing columns (log
+length, log pause before / after, position, reading speed, log characters, log video length) and the 19 `mediaAt`
+columns normalised by the training means (clipped to ±5) → linear + GELU (128) → two bidirectional GRU layers (128 per
+direction) → linear → log-odds. Weights int8 with a float scale per row (`to_js`-style JSON in 26-nn-model.js), unpacked
+once. 50-main.js computes the scores ahead with `detectSubtitles.warm(lines, dur, settings, media, yieldTask)` (the
+network's five stages as separate tasks; cached on the prepared transcript for that network, media object and
+duration). Decoder `nnLine.stretches(p, L, dec)`: p smoothed over ±`w` lines; a read starts at a line with smoothed p ≥
+`hi` and extends while ≥ `lo`; runs closer than `gap` s merge; edges are trimmed to lines with p ≥ `edge`, or, when that
+keeps less than `keep` of the stretch, to lines with p ≥ `eLo`; ≥ 8 s. Scorer: logistic over 77 columns (mean / max /
+min / median / share > 0.5 / > 0.9 / logit of the stretch's line p, log length, log lines, position, the p of the 10
+lines before / after, log video length, number of other stretches, share of the video, the stack and phrase-table
+scores of the stretch, and the 19 media columns inside / over the lines starting in the 30 s after / ending in the 30 s
+before) → p; accept as in step 6 with the model's own `auto` (0.75) / `offer` (0.5); caps as in step 7. Looser decoding
+(`loose`) gives the rejected stretches for the skip button.
+
 `readEndAt(lines, t, duration, media)`: the accepted read containing t → its end; else a rejected stretch with p ≥ 0.15 and
-≥ 6 s containing t (`detected: false`) (`findAdEnd` source `subtitle`). The detection is kept per prepared transcript,
+≥ 6 s containing t (`detected: false`) (`findAdEnd` source `subtitle`). With the neural path, an accepted read's end is
+the phrase-table path's stretch end when that path has a stretch containing t (its end tables land within 3 s more
+often: 82 % vs 77 % of presses on videos with a transcript). The detection is kept per prepared transcript,
 so a press does not rescore it. Following the talk forward without a read was
 measured worse than the blind step and is not done.
 
-Measured (README "Accuracy" → "Learned models"): cross-validated on the 8 112 training videos (by uploader) 81.4 % of
-crowd ads auto-skipped at p ≥ 0.8, 1 stretch outside every mark; on the 290 held-out test videos with a transcript
-74.7 % from the subtitle model, no auto-skip on unlabeled content.
+Measured (README "Accuracy" → "Neural line model"): cross-validated by uploader on the 8 112 training videos 84.3 % of
+crowd ads auto-skipped at p ≥ 0.75 (v3 phrase path: 81.4 % at 0.8), no skip judged content; on the 290 held-out test
+videos with a transcript 76.6 % from the subtitle model (v3: 74.7 %), no auto-skip on unlabeled content.
 
 ### 7.10 Danmaku / heat features and the bin model — `BAS.mediaFeatures` (29-media-features.js)
 

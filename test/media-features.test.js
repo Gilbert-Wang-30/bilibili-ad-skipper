@@ -36,7 +36,8 @@ Deno.test('detectSubtitles with danmaku / heat: the same read, edges within 3 s;
   for (const media of [undefined, null, { danmaku: [], heat: null }, { danmaku: DANMAKU, heat: null }]) {
     const c = D(VIDEO, 900, undefined, media).candidates;
     assertEquals(c.length, 1, JSON.stringify(media && media.danmaku && media.danmaku.length));
-    assert(c[0].start >= 297 && c[0].start <= 300 && c[0].end >= 323 && c[0].end <= 326 && !c[0].offerOnly, JSON.stringify(c));
+    // edges within 3 s of the read (its segue at 300, the end of its last call to action at 323)
+    assert(c[0].start >= 297 && c[0].start <= 303 && c[0].end >= 320 && c[0].end <= 326 && !c[0].offerOnly, JSON.stringify(c));
   }
   // the skip button's cached run follows the media it was given
   const L = D.prepare(VIDEO, 900);
