@@ -543,7 +543,8 @@ so a press does not rescore it. Following the talk forward without a read was
 measured worse than the blind step and is not done.
 
 Measured (README "Accuracy" → "Neural line model"): cross-validated by uploader on the 8 112 training videos 84.3 % of
-crowd ads auto-skipped at p ≥ 0.75 (v3 phrase path: 81.4 % at 0.8), no skip judged content; on the 290 held-out test
+crowd ads auto-skipped at p ≥ 0.75 (v3 phrase path: 81.4 % at 0.8), no skip judged content (84.2 % and 3 skips judged
+content when every teacher target comes from a copy that never saw the tested fold); on the 290 held-out test
 videos with a transcript 77.0 % from the subtitle model (v3: 74.7 %), no auto-skip on unlabeled content. The scorer's
 standardised columns are clipped to ±5 (fitted the same way), so a column that was nearly constant in training cannot
 decide a stretch; loose (skip-button) stretches have their own scorer (`scLoose`). Without a danmaku list (danmaku off or

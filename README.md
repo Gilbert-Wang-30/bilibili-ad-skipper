@@ -225,9 +225,10 @@ has voted on yet (13 192 videos with AI subtitles, danmaku and heat curves, fetc
 are by uploader; skips outside every crowd mark were read by two independent reviewers blind to the model's score (a
 third on disagreement; the reviewers were Claude models given the transcript — only for the evaluation, the extension
 itself calls no AI service), and those judged a real paid read the crowd never marked are not counted as false skips.
-Caveat: in cross-validation a training video's soft targets come from teacher copies fine-tuned on the other folds,
-which include the fold being tested, so the cross-validated v4 figures can be somewhat optimistic; the held-out test
-is clean (its videos were never used for fitting, tuning or the teacher).
+Caveat: in this cross-validation a training video's soft targets come from teacher copies fine-tuned on folds that
+include the fold being tested. Re-run with every target from a teacher copy that never saw the tested fold, the same
+recipe auto-skips 84.2 % at p ≥ 0.75 with 3 skips judged content and 1 122 content seconds (line AP 0.980 vs 0.982),
+so the leak is small. The held-out test is clean (its videos were never used for fitting, tuning or the teacher).
 
 | | v3 (phrase weights + trees) | **v4 (neural line model)** |
 |---|---|---|
