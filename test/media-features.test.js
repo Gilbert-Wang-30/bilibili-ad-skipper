@@ -49,7 +49,9 @@ Deno.test('detectBins: no model, no duration or no danmaku → nothing; candidat
   assertEquals(MF.detectBins(DANMAKU, null, 0).candidates, []);
   assertEquals(MF.detectBins([], null, 900).candidates, []);
   const M = BAS.subtitleModel;
-  try { BAS.subtitleModel = Object.assign({}, M, { bins: undefined }); assertEquals(MF.detectBins(DANMAKU, null, 900).candidates, []); } finally { BAS.subtitleModel = M; }
+  const NB = BAS.nnBinsModel;
+  // neither the trees nor the bins network
+  try { BAS.subtitleModel = Object.assign({}, M, { bins: undefined }); delete BAS.nnBinsModel; assertEquals(MF.detectBins(DANMAKU, null, 900).candidates, []); } finally { BAS.subtitleModel = M; if (NB) BAS.nnBinsModel = NB; }
   const r = MF.detectBins(DANMAKU, null, 900, BAS.DEFAULT_SETTINGS, { hasBody: false });
   for (const c of r.candidates) {
     assert(c.source === 'danmaku' && c.start < c.end && c.end <= 900 && c.end - c.start >= 8 && /弹幕\/热度模型/.test(c.reason), JSON.stringify(c));

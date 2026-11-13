@@ -70,6 +70,7 @@ src/content/26-nn-model.js        BAS.nnModel: its weights (int8), character lis
 src/content/27-subtitle-model.js  BAS.subtitleModel: weight tables + boosted trees of the subtitle detector and the bin model (generated, §7.9, §7.10)
 src/content/28-detect-subtitles.js BAS.detectSubtitles() (§7.9)
 src/content/29-media-features.js  BAS.mediaFeatures: danmaku / heat features, the bin model for videos without subtitles (§7.10)
+src/content/29-nn-bins-model.js   BAS.nnBinsModel: weights of the danmaku / heat network that replaces the bin trees (generated, §7.10)
 src/content/30-detect-chapters.js BAS.detectChapters()
 src/content/31-detect-danmaku.js  BAS.detectDanmaku()
 src/content/32-media.js           BAS.MediaAnalyzer
@@ -300,14 +301,26 @@ Step E — merge overlapping candidates (keep the higher confidence, union the r
    Crowd marks (§7.8) are hosts the same way, for danmaku and subtitle candidates — except that a disputed (offer-only)
    mark does not host an estimate that would auto-skip on its own (≥ minConfidence, not offer-only): the estimate keeps
    its span and takes the mark in as a source (the mark goes to `diagnostics.dropped`). Then each remaining subtitle read
-   (§7.9) hosts the danmaku candidates overlapping it: absorbed without changing its edges, except a confident one
+   (§7.9) that would auto-skip on its own (≥ minConfidence, not offer-only) hosts the danmaku candidates overlapping it: absorbed without changing its edges, except a confident one
    (≥ minConfidence, not offer-only) with IoU ≥ 0.5, which widens it to the union (+0.05).
 3. For danmaku candidates: snap `start` to the nearest chapter `boundary` within 10 s; else to the strongest `media.nearestCut(start, 4)`.
    Snap `end` similarly (boundary within 10 s, else cut within 4 s). If `end === null`: use the next chapter boundary after start if it is within 300 s (confidence 0.5), else drop the candidate (keep it in `diagnostics.dropped`).
    Edges with `lockStart` / `lockEnd` (measured by the A/V look-ahead, §7.7) are not snapped; ids use `idStart` / `idEnd`
    (the detector's own estimate) when present, so a refinement never changes a segment's id.
-4. Apply overrides: `ignore` ranges remove any segment overlapping them (> 50 %); `add` ranges become `source:'user', confidence:1`.
+4. Apply overrides: `ignore` ranges remove an estimate that would auto-skip on its own (≥ minConfidence, not
+   offer-only) when they cover > 50 % of it; from every other estimate they are cut out (pieces ≥ 5 s stay): nothing is
+   skipped or offered inside an ignored range. Each removed or cut-out part (≥ 5 s) goes to `diagnostics.dropped` with
+   reason 用户已忽略 (once per source and range), which the popup lists dimmed with 恢复. A piece keeps the estimate's id
+   anchors on the sides that were not cut and is anchored where it was cut, so its id does not depend on the other
+   pieces. `add` ranges become `source:'user', confidence:1`.
 5. Clip to `[0, duration − 1]`, drop `end − start < 5`, merge overlaps (union; max confidence; union sources), sort.
+   Segments that would auto-skip on their own (≥ minConfidence, not offer-only) and those that would not are joined
+   among themselves first (union, as above). Each sure one then takes in the weak ones it really overlaps (touching is
+   not enough): it keeps its range, source, reason, evidence and id anchors; the weak one adds its sources and an
+   `evidence.merged` entry for the part inside it. The weak ones' parts outside every sure one (≥ 5 s) stay segments of
+   their own, with `evidence.partOf` = the weak one's range and id anchors as in step 4 (still offered; e.g. an intro
+   offer before an ad, a heat offer after it). So what auto-skips never depends on the weak estimates. Step 6 gives
+   segments that auto-skip their ids first; offered ones take the `#k` suffixes when two round to the same id.
 6. `id = source[0] + ':' + Math.round(start) + '-' + Math.round(end)`; `autoSkip = confidence ≥ settings.minConfidence && !offerOnly`; `enabled = true`.
 
 ### 7.5 Viewer heat — `BAS.detectHeat` (34-detect-heat.js)
@@ -581,6 +594,29 @@ rate, hasBody → trees `bins.trees` → the two-state segmenter (§7.9 step 3, 
 logistic(`bins.read` · [1, mean, max of the bin scores − prior, log length, start / duration, hasBody]). p ≥ 0.98 →
 auto-skip (confidence 0.7 – 0.9), 0.8 ≤ p < 0.98 → offered; length 8–420 s. Candidates have source `danmaku`
 (reason 弹幕/热度模型), `evidence.bins.p`; the heat guard (§7.5) does not cap them (the model already read the curve).
+
+**Bins network (v4.1.0).** When `BAS.nnBinsModel` (29-nn-bins-model.js) is present, `detectBins` uses it instead of the
+trees. The video is cut into `bin` (3) s bins and each bin is read by the line network's code (26-nn-line.js, §7.9) as
+if it were a subtitle line: its "text" is `binTexts` — the bin's distinct danmaku, normalised like subtitle lines
+(`detectSubtitles.norm`), in time order, joined by `|`, at most 96 UTF-16 units — and its numbers are the bin's timing
+and the 19 `mediaAt` columns (danmaku columns NaN in danmaku segments that failed to load). Before that the list is cut
+to what the danmaku XML pool would hold (`xmlPool`: the newest `xmlCap(duration)` by danmaku id — 600 / 1 200 / 1 800 /
+3 600 / 7 200 / 9 600 for videos up to 150 / 600 / 900 / 2 400 / 3 600 s / longer; an even spread without ids), the danmaku the network
+was trained on (no training video was longer than an hour: beyond 3 600 s the cap is 9 600, the pool seen on held-out
+videos, and the network extrapolates). Its bin probabilities go through `nnLine.stretches` (`dec`: hi 0.8, lo 0.5, w 1, gap 6 s, edge 0.8;
+length ≤ `dec.maxLen` 420 s) and each stretch through `nnLine.features` (19 media columns, no phrase-table columns) plus
+[hasBody, log(1 + min(danmaku count, xmlCap)), heat curve known] → `nnLine.probability(·, sc)`. p ≥ `params.auto` (0.9)
+→ auto-skip (confidence 0.7 – 0.9), `params.offer` (0.6) ≤ p < auto → offered. Same candidate shape, with
+`evidence.bins.net = true`. `warmBins(list, heat, duration, pause)` prepares the inputs and computes the bin scores
+ahead in slices of ~25 ms (awaiting `pause()`, which may throw to stop) and keeps them per danmaku list, heat curve
+object, duration and network; `detectBins` re-uses them (else computes them at once). 50-main.js warms before calling
+`detectBins`, in detection (with its superseded-run pause) and in the keyword-edit re-detect (stopped when a new run
+starts or the video changes). `binsLineCol(lines, list, heat, duration)` gives each subtitle line the mean bin probability over
+the bins it overlaps (NaN without a list or the network) — the 20th column of a line network trained to read it
+(28-detect-subtitles.js `netRows`; the stretch scorer still reads the 19 media columns). The shipped line model (v4.1.0)
+is such a network: `nnModel.net.mu` / `sd` have 20 entries, the last for this column (trained on the bins network's
+out-of-fold probabilities). `warm()` runs `warmBins` on the media's danmaku first; a layout with neither 19 nor 20
+columns reads every media column as unknown.
 
 ## 8. Skipper — `new BAS.Skipper(video, opts)`
 

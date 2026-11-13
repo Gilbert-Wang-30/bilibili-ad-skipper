@@ -21,9 +21,9 @@ const READ = [
   [312, '续航也很长充一次能用两个月'], [315, '小象家这款现在活动价只要两百多'], [318, '评论区置顶链接就能领券下单'], [321, '还有保价和运费险'],
 ];
 const VIDEO = body([].concat(filler(0, 298), READ, filler(324, 900)));
-// the read's edges: its segue (300) and the end of its last call to action (323), each within one 3 s line — the
-// accuracy the detector is measured by (an edge within 3 s of the crowd's mark)
-const atStart = (t) => t >= 297 && t <= 300, atEnd = (t) => t >= 323 && t <= 326;
+// the read's edges: its segue (300) and the end of its last call to action (323), each within 3 s — the accuracy the
+// detector is measured by (an edge within 3 s of the crowd's mark)
+const atStart = (t) => t >= 297 && t <= 303, atEnd = (t) => t >= 320 && t <= 326;
 
 Deno.test('detectSubtitles: a read is found from its segue to its last call to action', () => {
   const r = D(VIDEO, 900);

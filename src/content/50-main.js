@@ -35,6 +35,7 @@
     stats: { danmakuCount: 0, viewPoints: 0, cuts: 0, missingSegments: [] },
     abort: null,
     runId: 0,
+    detecting: null,           // token of the detection run in flight (detect)
     videoEl: null,
     skipper: null,
     skipperVideo: null,
@@ -550,7 +551,13 @@
     return { lines, lan: pick.lan + (via === 'dm/view' ? '*' : ''), note: '' };
   }
 
-  async function detect(info, { force } = {}) {
+  /** A detection run; state.detecting is set while one is in flight (also a background refresh shown from the cache). */
+  async function detect(info, opts) {
+    const token = {};
+    state.detecting = token;
+    try { return await detectRun(info, opts); } finally { if (state.detecting === token) state.detecting = null; }
+  }
+  async function detectRun(info, { force } = {}) {
     abortDetection();
     const runId = state.runId;
     const ac = new AbortController();
@@ -684,7 +691,17 @@
     // a failed subtitle lookup keeps the decision of the last good run of this video (if there was one)
     const decided = state.binsFor === String(info.cid);
     const wantBins = !!dm.list && (sub.failed && decided ? state.binsCid === String(info.cid) : !sub.scored && !(sub.failed && subCands.length));
-    if (wantBins) { await yieldTask(); if (!alive()) return; }
+    if (wantBins) {
+      await yieldTask(); if (!alive()) return;
+      // the danmaku / heat network's scores in short tasks first (a long video is ~0.5 s of arithmetic)
+      if (BAS.mediaFeatures && BAS.mediaFeatures.warmBins && s.useDanmaku !== false) {
+        try { await BAS.mediaFeatures.warmBins(dm.list, s.useHeat === false ? null : heat, info.duration, pause); } catch (e) {
+          if (e && e.name === 'AbortError') return;
+          BAS.warn('bin model failed', e);
+        }
+        if (!alive()) return;
+      }
+    }
     if (!sub.failed || !decided) { state.binsFor = String(info.cid); state.binsCid = wantBins ? String(info.cid) : null; }
     const binCands = wantBins ? binCandidates(dm.list, heat, info.duration, s) : [];
     state.candidates = [].concat(ch.candidates, crowdCands, subCands, dm.candidates, binCands);
@@ -725,23 +742,34 @@
   }
 
   /** Keyword edits: re-run detectors on the danmaku already in memory instead of downloading everything again. */
-  function redetectFromMemory() {
+  async function redetectFromMemory() {
     const info = state.video;
     if (!info) return;
     const s = settings();
     if (!s.enabled) return;
     const mem = state.lastDanmaku && state.lastDanmaku.cid === info.cid ? state.lastDanmaku.list : null;
     if (!mem && s.useDanmaku) { detect(info, { force: true }).catch(() => {}); return; }
+    // a detection still running (also a background refresh) reads the settings it started with: try again once it is done
+    if (state.detecting) { redetectDebounced(); return; }
+    const runId = state.runId, heat = state.heat, binsCid = state.binsCid, wantBins = !!(s.useDanmaku && mem && binsCid === String(info.cid));
     try {
+      // the danmaku / heat network's scores in short tasks first (they are usually kept from detection already)
+      if (wantBins && BAS.mediaFeatures && BAS.mediaFeatures.warmBins) {
+        const still = () => { if (runId !== state.runId || state.video !== info) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; } };
+        await BAS.mediaFeatures.warmBins(mem, s.useHeat === false ? null : heat, info.duration, () => yieldTask().then(still));
+        still();
+        // what this re-detect read changed meanwhile (a detection finished, heat arrived): start over
+        if (state.detecting || state.heat !== heat || state.binsCid !== binsCid || !state.lastDanmaku || state.lastDanmaku.list !== mem) { redetectDebounced(); return; }
+      }
       const ch = BAS.detectChapters ? BAS.detectChapters(state.viewPoints, info.duration, s) : { candidates: [], boundaries: state.boundaries };
       const dm = s.useDanmaku && mem ? BAS.detectDanmaku(mem, info.duration, s) : { candidates: [] };
       const kept = state.candidates.filter((c) => c.source === 'crowd' || c.source === 'subtitle');
-      const bins = s.useDanmaku && mem && state.binsCid === String(info.cid) ? binCandidates(mem, state.heat, info.duration, s) : [];
+      const bins = wantBins ? binCandidates(mem, heat, info.duration, s) : [];
       state.candidates = [].concat(ch.candidates || [], kept, dm.candidates || [], bins);
       state.boundaries = ch.boundaries || state.boundaries;
       applyFusion('keywords');
       if (state.status === 'ready' && state.cacheable) { state.cacheTs = Date.now(); cacheResults(info); }
-    } catch (e) { BAS.warn('re-detect failed', e); }
+    } catch (e) { if (!(e && e.name === 'AbortError')) BAS.warn('re-detect failed', e); }
   }
   const redetectDebounced = debounce(redetectFromMemory, 1200);
 

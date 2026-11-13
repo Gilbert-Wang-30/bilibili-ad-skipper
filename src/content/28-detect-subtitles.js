@@ -441,6 +441,21 @@
     return (L.sMemo = { M, media, dur, S0, S: scoresOf(L, M, dur, settings, media, S0) });
   }
   const sameMedia = (x, y) => (x || null) === (y || null);
+  /**
+   * The rows the line network reads: the media rows, plus — for a network trained with a 20th column — the danmaku /
+   * heat bins network's view of each line (29-media-features.js binsLineCol; NaN = not known: no danmaku list).
+   * The stretch scorer keeps reading the 19 media columns.
+   */
+  function netRows(N, L, dur, media, rows) {
+    const MF = BAS.mediaFeatures, want = N.net.mu ? N.net.mu.length : 0, D = MF ? MF.CONST.MEDIA_D : 0;
+    if (!rows || want === D) return rows;
+    if (!D || want !== D + 1) return null;   // a layout this code does not know: the media columns read as unknown
+    const col = MF.binsLineCol ? MF.binsLineCol(L, media && media.danmaku, media && media.heat, dur) : new Float32Array(L.length).fill(NaN);
+    const out = new Float32Array(L.length * want);
+    // a line whose danmaku columns are unknown (a danmaku segment that failed to load) gets an unknown 20th column too
+    for (let i = 0; i < L.length; i++) { out.set(rows.subarray(i * D, i * D + D), i * want); out[i * want + D] = Number.isNaN(rows[i * D]) ? NaN : col[i]; }
+    return out;
+  }
   /** The network's line scores warm() left on this prepared transcript for this network, media and duration, or null. */
   const cachedNN = (L, N, media, dur) => (L.nnz && L.nnz.net === N.net && sameMedia(L.nnz.media, media) && L.nnz.dur === dur ? L.nnz : null);
   /** The neural path's stretches: [{i0, i1, p}] read probabilities, and looser ones for the skip button. */
@@ -449,7 +464,7 @@
     // line scores computed ahead by warm() for this network, media and duration, else now
     const c = cachedNN(L, N, media, dur);
     const rows = c ? c.rows : mediaRows(L, dur, settings, media);
-    const z = c ? c.z : NL.scores(N.net, L, dur, rows), p = new Float64Array(n);
+    const z = c ? c.z : NL.scores(N.net, L, dur, netRows(N, L, dur, media, rows)), p = new Float64Array(n);
     for (let i = 0; i < n; i++) p[i] = sigmoid(z[i]);
     // the scorer was fitted with the phrase-table / stack scores of each stretch as inputs (m.old)
     const k = m.old ? scoresMemo(L, M, dur, settings, media) : null;
@@ -559,8 +574,11 @@
   detectSubtitles.warm = async (lines, duration, settings, media, pause) => {
     const L = prepare(lines, duration), N = nnModel();
     if (!N || !L.length || !model()) return L;
-    const dur = duration > 0 ? duration : L.duration, rows = mediaRows(L, dur, settings, media);
-    const z = await BAS.nnLine.scoresAsync(N.net, L, dur, rows, pause);
+    const dur = duration > 0 ? duration : L.duration, rows = mediaRows(L, dur, settings, media), MF = BAS.mediaFeatures;
+    await pause();
+    // a network that reads the bins network's view of each line: that network's work first, in short tasks too
+    if (MF && MF.warmBins && N.net.mu && N.net.mu.length === MF.CONST.MEDIA_D + 1 && media && Array.isArray(media.danmaku)) await MF.warmBins(media.danmaku, media.heat, dur, pause);
+    const z = await BAS.nnLine.scoresAsync(N.net, L, dur, netRows(N, L, dur, media, rows), pause);
     L.nnz = { net: N.net, media, dur, rows, z };
     // the phrase-table / stack scores the stretch scorer reads, as two more short tasks
     if (N.src.old) {

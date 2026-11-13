@@ -19,6 +19,14 @@
    * Returns the per-video index mediaAt reads; reusable for every line / bin.
    */
   function prepareMedia(danmaku, heat, duration, settings) {
+    const g = prepareMediaSteps(danmaku, heat, duration, settings);
+    let r;
+    while (!(r = g.next()).done);
+    return r.value;
+  }
+  const PAUSE_NOW = 'pause';   // yielded by the step generators before a step of more than a few ms
+  /** prepareMedia in steps (a generator; its value is the index): yields every 1 000 danmaku and around the detector. */
+  function* prepareMediaSteps(danmaku, heat, duration, settings) {
     const dur = duration > 0 ? duration : 0;
     // time and text only: the models were trained on the danmaku XML pool, which has no 'airborne' actions
     const list = (Array.isArray(danmaku) ? danmaku : []).filter((d) => d && isFinite(d.t) && typeof d.text === 'string').map((d) => ({ t: +d.t, text: d.text })).sort((a, b) => a.t - b.t);
@@ -36,11 +44,14 @@
       ann[i + 1] = ann[i] + (c && c.startClass === 'announce' && !c.negated ? 1 : 0);
       soft[i + 1] = soft[i] + (c && (c.startClass === 'moment' || c.startClass === 'bare' || c.startClass === 'weak') ? 1 : 0);
       if (c && Array.isArray(c.targets)) for (const x of c.targets) if (x && isFinite(x.target) && !x.poi) cues.push([d.t, +x.target, !!x.weak]);
+      if (i % 1000 === 999) yield;
     }
+    yield PAUSE_NOW;
     // the hand-written detector's segments (confidence, offer-only halved), with the default settings the learned
     // models were trained on: the viewer's extra keywords change the danmaku detector, not these columns
     let segs = [];
     try { segs = D ? (D(list, dur, BAS.DEFAULT_SETTINGS || settings).candidates || []) : []; } catch (e) { segs = []; }
+    yield PAUSE_NOW;
     let ha = null;
     try { ha = heat && BAS.detectHeat ? BAS.detectHeat.analyse(heat, dur) : null; } catch (e) { ha = null; }
     return { dur, n, t, vocab, endW, ann, soft, cues, segs, heat: heat || null, ha };
@@ -105,6 +116,7 @@
    * trees, joined by the two-state segmenter, each stretch scored as a whole. Same candidate shape as the other detectors.
    */
   function detectBins(danmaku, heat, duration, settings, opts) {
+    if (binsNet() && duration > 0) return detectBinsNN(danmaku, heat, duration, opts);
     const M = BAS.subtitleModel && BAS.subtitleModel.bins, D = BAS.detectSubtitles;
     if (!M || !D || !(duration > 0)) return { candidates: [] };
     const X = prepareMedia(danmaku, heat, duration, settings);
@@ -133,5 +145,144 @@
     return { candidates: out };
   }
 
-  BAS.mediaFeatures = { prepareMedia, mediaAt, binRow, binMatrix, detectBins, CONST: { MEDIA_D, BIN_D, JUMP_BACK, JUMP_FAR } };
+  // ---------------------------------------------------------------------------------------------------------------
+  // The bins network (29-nn-bins-model.js, when present; replaces the trees above): the video cut into NB_BIN s bins, each
+  // read like a subtitle line by the line network's code (26-nn-line.js) — its "text" is the danmaku posted in it, its
+  // numbers the bin's timing and media columns — then the same stretch decoder and a logistic stretch scorer.
+  const NB_BIN = 3, NB_CAP = 96, DM_SEGMENT = 360;
+  /** Size of the danmaku XML pool for a video this long (the training danmaku were that pool: never more than this;
+   *  no training video was longer than an hour, so 9 600 is the pool seen on held-out videos, not a trained size). */
+  const xmlCap = (dur) => (dur <= 150 ? 600 : dur <= 600 ? 1200 : dur <= 900 ? 1800 : dur <= 2400 ? 3600 : dur <= 3600 ? 7200 : 9600);
+  let NB = null;
+  function binsNet() {
+    const M = BAS.nnBinsModel;
+    if (!M || !BAS.nnLine || !BAS.detectSubtitles || !BAS.detectSubtitles.norm) return null;
+    if (!NB || NB.src !== M) NB = { src: M, net: BAS.nnLine.load(M.net) };
+    return NB;
+  }
+  /** The bins' texts as in training: each bin's distinct normalised danmaku in time order, joined by '|', capped. */
+  function binTexts(list, n, bin, cap) {
+    const norm = BAS.detectSubtitles.norm, out = Array.from({ length: n }, () => []), seen = Array.from({ length: n }, () => new Set());
+    for (const d of list) {
+      const i = Math.floor(d.t / bin);
+      if (i < 0 || i >= n) continue;
+      const s = norm(d.text);
+      if (!s || seen[i].has(s)) continue;
+      seen[i].add(s); out[i].push(s);
+    }
+    return out.map((xs) => xs.join('|').slice(0, cap));
+  }
+  /** Danmaku ids are numbers that grow with posting time, as decimal strings: newer first. */
+  const newerFirst = (x, y) => (y.length - x.length) || (y < x ? -1 : y > x ? 1 : 0);
+  /**
+   * What the danmaku XML pool would hold (the network's training danmaku): a signed-in viewer's player loads more for a
+   * busy video, so beyond the pool's size only the newest are kept (by id; without ids, an even spread).
+   */
+  function xmlPool(list, dur) {
+    const cap = xmlCap(dur);
+    if (list.length <= cap) return list;
+    if (list.every((d) => typeof d.idStr === 'string' && /^\d+$/.test(d.idStr))) return list.slice().sort((x, y) => newerFirst(x.idStr, y.idStr)).slice(0, cap);
+    const out = [];
+    for (let i = 0; i < cap; i++) out.push(list[Math.floor((i * list.length) / cap)]);
+    return out;
+  }
+  /** The network's inputs for a video, in steps (yields between them: a few ms of work each): bins [{a, b, n}] and
+   *  their media rows (danmaku columns NaN where not known). */
+  function* binsInputSteps(danmaku, heat, dur) {
+    const valid = (Array.isArray(danmaku) ? danmaku : []).filter((d) => d && isFinite(d.t) && typeof d.text === 'string');
+    yield;
+    const list = xmlPool(valid, dur).map((d) => ({ t: +d.t, text: d.text })).sort((a, b) => a.t - b.t);
+    yield;
+    const n = Math.max(1, Math.ceil(dur / NB_BIN)), T = binTexts(list, n, NB_BIN, NB_CAP), L = new Array(n);
+    for (let i = 0; i < n; i++) L[i] = { a: i * NB_BIN, b: Math.min(dur, (i + 1) * NB_BIN), n: T[i] };
+    yield;
+    const X = yield* prepareMediaSteps(list, heat, dur), rows = new Float32Array(n * MEDIA_D);
+    yield;
+    const miss = new Set(Array.isArray(danmaku) && Array.isArray(danmaku.missingSegments) ? danmaku.missingSegments : []);
+    for (let i = 0; i < n; i++) {
+      mediaAt(X, L[i].a, L[i].b, rows, i * MEDIA_D);
+      if (miss.size && miss.has(Math.floor((L[i].a + L[i].b) / 2 / DM_SEGMENT) + 1)) rows.fill(NaN, i * MEDIA_D, i * MEDIA_D + 14);
+      if (i % 128 === 127) yield;
+    }
+    return { L, rows, ndm: list.length };
+  }
+  /** The same in one go. */
+  function binsInputs(danmaku, heat, dur) {
+    const g = binsInputSteps(danmaku, heat, dur);
+    let r;
+    while (!(r = g.next()).done);
+    return r.value;
+  }
+  const binsMemo = new WeakMap();   // danmaku list → {heat, dur, net, L, rows, ndm, z}: warmBins' work, re-used by detectBins
+  const sameBins = (k, heat, dur, net) => k && k.heat === heat && k.dur === dur && k.net === net;
+  /** The network's bin scores for a video, in short tasks (pause() between ~25 ms slices; it may throw to stop). */
+  async function warmBins(danmaku, heat, duration, pause) {
+    const N = binsNet();
+    if (!N || !(duration > 0) || !Array.isArray(danmaku)) return;
+    if (sameBins(binsMemo.get(danmaku), heat || null, duration, N.net)) return;
+    const g = binsInputSteps(danmaku, heat || null, duration), now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+    let r, t0 = now();
+    // a pause every ~12 ms of work, and before each step the generator marks as heavy (the danmaku detector)
+    while (!(r = g.next()).done) if (r.value === PAUSE_NOW || now() - t0 >= 12) { await pause(); t0 = now(); }
+    const I = r.value;
+    await pause();
+    const z = await BAS.nnLine.scoresAsync(N.net, I.L, duration, I.rows, pause);
+    binsMemo.set(danmaku, Object.assign(I, { heat: heat || null, dur: duration, net: N.net, z }));
+  }
+  /** The network's work for a video: warmBins' when it left it for this list, heat curve and duration, else now. */
+  function binsRun(danmaku, heat, duration) {
+    const N = binsNet();
+    heat = heat || null;
+    let k = Array.isArray(danmaku) ? binsMemo.get(danmaku) : null;
+    if (!sameBins(k, heat, duration, N.net)) {
+      const I = binsInputs(danmaku, heat, duration);
+      k = Object.assign(I, { heat, dur: duration, net: N.net, z: BAS.nnLine.scores(N.net, I.L, duration, I.rows) });
+      if (Array.isArray(danmaku)) binsMemo.set(danmaku, k);
+    }
+    return k;
+  }
+  /**
+   * The bins network's view of each subtitle line (the line model's 20th column): the mean probability over the bins
+   * the line overlaps (test/scratch/nn/bins/bins2lines.py). Float32Array, NaN for every line (not known) without a
+   * danmaku list or the bins network.
+   */
+  function binsLineCol(lines, danmaku, heat, duration) {
+    const out = new Float32Array(lines.length).fill(NaN);
+    if (!binsNet() || !Array.isArray(danmaku) || !(duration > 0)) return out;
+    const z = binsRun(danmaku, heat, duration).z, n = z.length, cs = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) cs[i + 1] = cs[i] + 1 / (1 + Math.exp(-z[i]));
+    for (let j = 0; j < lines.length; j++) {
+      const i0 = Math.max(0, Math.min(n - 1, Math.floor(lines[j].a / NB_BIN)));
+      const i1 = Math.max(i0, Math.max(0, Math.min(n - 1, Math.ceil(lines[j].b / NB_BIN) - 1)));
+      out[j] = (cs[i1 + 1] - cs[i0]) / (i1 - i0 + 1);
+    }
+    return out;
+  }
+  function detectBinsNN(danmaku, heat, duration, opts) {
+    const M = BAS.nnBinsModel, NL = BAS.nnLine;
+    heat = heat || null;
+    const k = binsRun(danmaku, heat, duration);
+    const { L, rows, z } = k, P = M.params, dec = M.dec, hasBody = opts && opts.hasBody ? 1 : 0;
+    const p = new Float64Array(z.length);
+    for (let i = 0; i < z.length; i++) p[i] = 1 / (1 + Math.exp(-z[i]));
+    const spans = NL.stretches(p, L, dec).filter(([l, r]) => L[r].b - L[l].a <= (dec.maxLen || 420));
+    const out = [];
+    for (const [l, r] of spans) {
+      const f = NL.features(p, L, duration, l, r, spans.length - 1, rows, M.mu, M.sd, null);
+      f.push(hasBody, Math.log1p(Math.min(k.ndm, xmlCap(duration))), heat ? 1 : 0);
+      const pr = NL.probability(f, M.sc);
+      if (pr < P.offer) continue;
+      const auto = pr >= P.auto, start = L[l].a, end = Math.min(duration, L[r].b);
+      out.push({
+        start: Math.round(start * 10) / 10, end: Math.round(end * 10) / 10, source: 'danmaku', sources: ['danmaku'],
+        confidence: auto ? Math.min(0.9, 0.7 + 0.2 * (pr - P.auto) / Math.max(1e-6, 1 - P.auto)) : 0.5,
+        offerOnly: !auto || undefined, reason: `弹幕/热度模型：广告（${Math.round(pr * 100)}%）`,
+        evidence: { bins: { p: Math.round(pr * 1000) / 1000, net: true } },
+      });
+    }
+    for (const c of out) if (!c.offerOnly) delete c.offerOnly;
+    return { candidates: out };
+  }
+
+  BAS.mediaFeatures = { prepareMedia, mediaAt, binRow, binMatrix, detectBins, warmBins, binsLineCol, binTexts, binsInputs, xmlCap, xmlPool, CONST: { MEDIA_D, BIN_D, JUMP_BACK, JUMP_FAR, NB_BIN, NB_CAP } };
 })();

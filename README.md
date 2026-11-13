@@ -14,8 +14,8 @@ Seven independent signals are fused into time segments with a confidence score:
 |---|---|---|
 | **Chapters (章节 / 视频看点)** | Uploader chapters from the player API whose title says 广告 / 恰饭 / 赞助 / 推广 / 商单 … | 0.95 |
 | **Crowd marks (小电视空降助手)** | Segments that viewers of [BilibiliSponsorBlock](https://github.com/hanydd/BilibiliSponsorBlock) marked by hand and voted on (downvoted ones are hidden). Where a video has one it is the most precise signal (edges within ~1 s); a disputed mark is only offered. | 0.9 – 0.98 |
-| **AI subtitles (AI 字幕)** | What the uploader says, from the video's AI subtitle file. **No AI service, no API key, nothing sent anywhere:** everything runs on numbers that ship with the extension. A small neural network (2.9 million numbers, stored as 8-bit integers; trained offline on 13 192 crowd-labelled videos) reads every line — its characters, its timing and what the danmaku and the heat curve say at that moment — in the context of the whole video, and gives it the probability that it belongs to a sponsor read. A read is where that probability rises and stays high; its edges sit on lines the network is sure of. Each stretch is then scored as a whole (a logistic regression over its statistics, the danmaku around it and the older phrase-weight / boosted-tree line scores, which still ship as inputs and as the fallback). p ≥ 0.75 auto-skips, 0.5 – 0.75 is offered as a button. A video that sells from start to end (more than four auto-skipped reads, or reads over 40 % of it) is only offered. | 0.5 – 0.95 |
-| **Danmaku (弹幕)** | All danmaku of the video (same protobuf API the player uses). Clusters of *ad announcements* (恰饭了, 广告来了, 零帧起手, 感谢金主…), *jump cues* (空降 6:00, 跳伞04:50, 745工程, 坐标609, 向右20下 …) and *landing thanks* (欢迎回来, 空降成功, 感谢609工程 …). The median of agreeing jump targets gives the end; thanks clusters confirm it. For a video **without subtitles**, a second, learned danmaku model (boosted trees over the same danmaku classes and the heat curve in 2-second steps, counted from 10 529 labelled videos; no AI) finds ads these hand-written rules miss: it auto-skips only when very sure (p ≥ 0.98) and offers a button from 0.8. | 0.2 – 1.0 |
+| **AI subtitles (AI 字幕)** | What the uploader says, from the video's AI subtitle file. **No AI service, no API key, nothing sent anywhere:** everything runs on numbers that ship with the extension. A small neural network (2.9 million numbers, stored as 8-bit integers; trained offline on 13 192 crowd-labelled videos) reads every line — its characters, its timing, what the danmaku and the heat curve say at that moment and (v4.1.0) what the danmaku network below makes of that moment — in the context of the whole video, and gives it the probability that it belongs to a sponsor read. A read is where that probability rises and stays high; its edges sit on lines the network is sure of. Each stretch is then scored as a whole (a logistic regression over its statistics, the danmaku around it and the older phrase-weight / boosted-tree line scores, which still ship as inputs and as the fallback). p ≥ 0.75 auto-skips, 0.5 – 0.75 is offered as a button. A video that sells from start to end (more than four auto-skipped reads, or reads over 40 % of it) is only offered. | 0.5 – 0.95 |
+| **Danmaku (弹幕)** | All danmaku of the video (same protobuf API the player uses). Clusters of *ad announcements* (恰饭了, 广告来了, 零帧起手, 感谢金主…), *jump cues* (空降 6:00, 跳伞04:50, 745工程, 坐标609, 向右20下 …) and *landing thanks* (欢迎回来, 空降成功, 感谢609工程 …). The median of agreeing jump targets gives the end; thanks clusters confirm it. For a video **without subtitles**, a small neural network (v4.1.0; trained on 38 345 labelled videos, shipped as 1.1 MB of weights, runs locally; no AI service) reads the danmaku themselves in 3-second steps — what viewers wrote there, plus the same danmaku classes and the heat curve — and finds ads these hand-written rules miss: it auto-skips at p ≥ 0.9 and offers a button from 0.6. | 0.2 – 1.0 |
 | **Viewer heat (高能进度条)** | The player's own viewer-activity curve (about 100 samples per video, served without login). When many viewers drag past an ad, the curve ramps up across it, peaks at its end and falls off a cliff. A danmaku segment that matches gets +0.2 confidence, which lets thin danmaku (e.g. signed out) still auto-skip. On popular videos it also blocks hand-written danmaku auto-skips that have no 空降 coordinates when the curve shows no skipping (the learned danmaku / heat model's skips are exempt: it already read the curve). Alone, it only offers a manual skip button. | confirmation |
 | **Audio / video look-ahead** | For a likely ad the danmaku cannot confirm on their own (they name an ad but are too few), *before you reach it*, the extension downloads just that stretch (plus 45 s around it) of the video's own lowest-bitrate audio track and its 360p picture, using the byte index every bilibili stream carries (about 4–12 MB per segment, at most 60 MB per video), decodes it in the page (`decodeAudioData`, WebCodecs) and compares the inside with the surroundings. Many sponsored reads are **louder**, **steadier** (narration over music, no pauses) and **brighter** than the video around them. When a segment clearly is, and its danmaku name an ad (恰饭 / 广告 … or landing thanks), it gets +0.25 confidence. That lifts thin-danmaku ads to auto-skip. It also finds the end for danmaku that only announce an ad's start. It never blocks a segment: on crowd-labelled ads a third of the real ones looked no different from their surroundings. | confirmation, open-ended ends |
 | **Live frame cuts** | While the video plays, low-resolution frame differences (and optionally the audio level/spectrum via `captureStream`, never re-routing playback) record hard cuts. Cuts within a few seconds of a boundary that the look-ahead did not already fix snap it to the exact frame. | refinement only |
@@ -123,6 +123,7 @@ src/content/26-nn-model.js         its weights (int8, generated), character list
 src/content/27-subtitle-model.js    the learned models (generated from crowd-labelled videos): phrase-weight and edge tables, the line trees, the danmaku / heat bin model
 src/content/28-detect-subtitles.js  sponsor reads in the AI subtitles (neural path; phrase weights, boosted trees, segmenter, edges as inputs and fallback), skip-button reads
 src/content/29-media-features.js    danmaku / heat features for the learned models; the danmaku / heat model for videos without subtitles
+src/content/29-nn-bins-model.js     weights of the danmaku / heat network (int8, generated) that model uses, its decoder and scorer settings
 src/content/30-detect-chapters.js
 src/content/31-detect-danmaku.js
 src/content/32-media.js       frame/audio transition analyzer
@@ -172,6 +173,10 @@ uploader); the newly collected videos are scored by copies fine-tuned on four of
 copy that saw other videos of the same uploader. That teacher does not ship and is never run by the extension. The shipped file holds the small network's weights as 8-bit integers with one scale per row, its list of
 characters, and the decoder / stretch-scorer settings.
 
+The danmaku / heat network (`src/content/29-nn-bins-model.js`) is the same kind of small network, trained the same way
+(PyTorch, scripts not in this repository, 5-fold cross-validated by uploader) on the crowd marks alone — no teacher —
+of 38 345 videos (the danmaku XML pool and heat curve of each, fetched signed out; 8 163 of them without subtitles).
+
 Detector report over all fixtures (needs the private corpus):
 
 ```bash
@@ -218,6 +223,56 @@ and three opening skips):
 | Live check on bilibili (v0.4.1, 2026-10-17) | measured ads auto-skipped (ends from the danmaku, e.g. 1.2 s late on BV1jCJs6UE9S); the thin-danmaku ad gets its end from the media; an intro the media calls ad-like stays a button |
 | Cost per suspected segment | 4–12 MB (audio ≈ 66 kbps + 360p video 125–400 kbps depending on the codec), 4–10 s in the background; at most 60 MB per video |
 
+### Danmaku / heat network (v4.1.0, 2026-11-12)
+
+About one crowd-marked video in four (85 of the 375 held-out ones) has no AI subtitle file; checked again in 2026-11,
+only 4 of those 85 had gained one. For them the danmaku and the heat curve are all there is. v4.1.0 replaces the boosted
+trees that read them with a small network that also reads **what the viewers wrote** in each 3-second step (the trees
+only saw counts of hand-picked danmaku classes). Without that text a network of the default configuration scores 0.864 bin AP on fold 0
+instead of 0.894 with it (0.899–0.904 for the tuned variants). Training data: 38 345 crowd-labelled videos (36 132 sponsor marks); none of the held-out videos.
+
+The held-out rows of this table keep the v4.0.2 subtitle model, to show the danmaku network alone; both v4.1.0 changes
+together are in the next table.
+
+| | trees (v4.0.2) | **network (v4.1.0)** |
+|---|---|---|
+| Cross-validation, the 5 747 newer videos without subtitles (never seen by the trees either), ads auto-skipped | 29.0 % at the shipped p ≥ 0.98 (40.4 % at 0.9) | **57.6 %** at the shipped p ≥ 0.9 (51.5 % at 0.95) |
+| … skips outside every mark / content cut per video / ad-free control videos cut | 12 / 2.0 s / 1 (at 0.98) | **3 / 0.5 s / 2** |
+| **Held-out test**, whole extension, all 375 videos (danmaku XML pool, the kind trained on) | 75.1 % | **79.9 %** |
+| … the 85 without subtitles | 59 % (40 of 68) | **82 %** (56 of 68) |
+| … with the signed-out danmaku the extension itself fetched (a signed-in viewer gets more), all / without subtitles | 71.2 % / 47 % | **76.3 % / 72 %** |
+| … skips outside every crowd mark / content cut | 0 / 228 s | **0 / 81 s** |
+| Popular videos without subtitles (158): auto-skips / inside a crowd sponsor mark | 4 / 3 | **8 / 5** |
+
+Of the three popular-video skips no crowd mark covers, the danmaku inside two say plainly that an ad is playing
+("两个广子", sponsor jokes, landing codes); the third is an anime's opening song that viewers 跳伞 past — the kind of
+thing the network can mistake for an ad. (Read by a Claude model during the evaluation; the extension calls no AI
+service.) A signed-in viewer's player loads more danmaku than the XML pool (about 1.9× on the public example video), so
+for a busy video the network reads the newest ones up to the pool's size (videos longer than an hour were not in its
+training data). Cost: 1.1 MB of weights; about 0.25 s of arithmetic for an hour-long video, in slices of at most ~30 ms.
+
+The same release changes how overlapping estimates merge: a skip that would auto-skip on its own no longer grows by a
+weak, longer estimate that overlaps it — the weak estimate's own parts outside the skip stay offered as a button (on
+held-out: same recall, content cut 86 → 81 s; on one popular video it turned a 212-second skip into the 18-second ad
+the crowd marked). An ignored or undone range is also cut out of what it only partly covers.
+
+**The subtitle model reads the network too.** For videos with subtitles, the line network now also gets the danmaku
+network's probability for each line's moment as one more input (retrained on the same 13 192 videos with that input
+taken out of fold; the decoder and stretch scorer refitted the same way). Skips outside every mark were judged blind by
+two Claude models, as for v4.0.
+
+| | v4.0.2 | **v4.1.0** |
+|---|---|---|
+| Cross-validation, 8 112 videos: crowd ads auto-skipped at p ≥ 0.75 | 84.3 % | **84.8 %** |
+| … skips judged content / content cut | 0 / 1 009 s | 1 (an 18-second overrun right after a real plug) / **818 s** |
+| … at p ≥ 0.8 | 83.7 % / 982 s | **84.3 % / 662 s** |
+| **Held-out**, the 290 videos with a transcript, whole extension (XML pool / signed-out danmaku) | 79.2 % / 77.4 % | **80.8 % / 79.2 %** |
+| … content cut / skips outside every crowd mark | 68 s, 69 s / 0 | 97 s, 125 s / 1 (a car plug that runs on into thanks for free footage) |
+| **Held-out, all 375 videos, both changes** (XML pool / signed-out danmaku) | 75.1 % / 71.2 % | **81.1 % / 77.8 %** |
+| Popular videos with a transcript (419): auto-skips | 52 | 55: 5 new (2 inside crowd sponsor marks, 2 unmarked paid reads, 1 the uploader's own shop sale), 2 no longer (1 inside a mark) |
+| Skip button, 936 held-out presses, with the danmaku: within 3 s of the labelled end | 76 % (81 % with a transcript) | 75 % (80 %) |
+| Scoring time, a 100-minute transcript with 20 000 danmaku | ~1.0 s, longest task ~56 ms | ~1.3 s, longest task ~39 ms |
+
 ### Neural line model (v4.0.0, 2026-11-10)
 
 Training data: the 8 112 videos below plus 5 080 newly collected ones whose BilibiliSponsorBlock sponsor marks nobody
@@ -243,7 +298,7 @@ so the leak is small. The held-out test is clean (its videos were never used for
 | Popular videos: auto-skips from the subtitles (+ 4 from the unchanged danmaku / heat model in both) | 49 (51 of all 53 real) | **52, 50 a real paid read** (1 the creator's own books, 1 a video about becoming a brand ambassador) |
 | … blind sample (160 videos read in full): sponsor reads auto-skipped | 19 / 35 | 19 / 35 |
 | Skip button (936 held-out presses): lands within 3 s of the labelled end | 75 % (81 % with a transcript) | **76 %** (82 %; where its end comes from was chosen on these same presses) |
-| Scoring time, longest transcripts (in short tasks) | ~0.06 s per 1 000 lines | ~0.4 s per 1 000 lines; no task over ~40 ms at 3 000 lines (v4.0.2) |
+| Scoring time, longest transcripts (in short tasks) | ~0.06 s per 1 000 lines | ~0.4 s per 1 000 lines; no task over ~40 ms at 3 000 lines (v4.0.2; v4.1.0: see above) |
 
 For scale: on held-out set B (214 of those videos, 174 crowd ads), v4 auto-skips 135 (77.6 %; 139 with the XML danmaku);
 the language-model design of v1.0.0 (an LLM reading the transcript through an API, since removed) skipped 164 (94.3 %).
@@ -342,8 +397,10 @@ ends worse as better against the crowd. To rerun the test: `tools/bsb-prepare.py
 
 * Danmaku-based detection needs viewers to have reacted; very new or unpopular videos may have no usable danmaku.
   Logged-in users receive far more danmaku than anonymous ones.
-* About three in four videos have an AI subtitle file. For the rest only the danmaku and the heat curve speak, and the
-  model for them is deliberately strict (about half of their ads are skipped). A product woven into the content (a whole
+* About three in four videos have an AI subtitle file. For the rest only the danmaku and the heat curve speak: the
+  danmaku network skips about seven in ten of their ads on held-out videos, and fewer where few viewers commented. An
+  opening song or a long intro that viewers tell each other to jump past (跳伞 / 空降 to its end) can look like an ad
+  to it. A product woven into the content (a whole
   sponsored review, a skit, a game played in a vlog, a sponsor's hardware in a build) has no separate read to find and
   is rarely skipped, and short mentions (10–20 s, an app named in passing) mostly score too low to skip. Spec-and-price
   talk (a phone-launch roundup, a sale list) can score like a read; it mostly stays below the auto-skip threshold.
@@ -360,5 +417,6 @@ ends worse as better against the crowd. To rerun the test: `tools/bsb-prepare.py
 * Only `www.bilibili.com/video/*` pages (plus `/list/*`, `/festival/*` and the localized `/en/`, `/zh-Hans/`, `/ja/` …
   versions of them); bangumi is out of scope, and in live rooms only the volume curve runs.
 * Bilibili's own pre-roll/overlay ads are not touched.
-* The neural model adds about 4 MB to the extension and about 0.3 s of arithmetic per 1 000 subtitle lines (a long
-  transcript has ~1 500), done in short steps when a video is first analysed.
+* The neural models add about 5 MB to the extension and about 0.4 s of arithmetic per 1 000 subtitle lines (a long
+  transcript has ~1 500) plus about 0.25 s per hour of video for the danmaku network, done in short steps when a video
+  is first analysed.

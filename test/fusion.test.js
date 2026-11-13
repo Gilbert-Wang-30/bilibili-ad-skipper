@@ -100,22 +100,22 @@ Deno.test('fuse: end === null with no boundary within 300 s is dropped into diag
   assertEquals(segs2.diagnostics.dropped.length, 1);
 });
 
-Deno.test('fuse: overrides.ignore removes segments overlapping > 50 %; overrides.add becomes a user segment', () => {
+Deno.test('fuse: overrides.ignore removes segments overlapping > 50 % and clips the rest; overrides.add becomes a user segment', () => {
   const segs = BAS.fuse({
     candidates: [danmaku(100, 160, 0.9), danmaku(300, 360, 0.9)],
     duration: 1000, boundaries: [],
     overrides: { ignore: [{ start: 100, end: 160 }, { start: 340, end: 400 }], add: [{ start: 500, end: 530 }] },
     settings: S,
   });
-  // 100-160 fully ignored; 300-360 overlaps 340-400 by 20/60 = 33 % -> kept; user 500-530 added
-  assertEquals(segs.map((s) => [s.start, s.end, s.source]), [[300, 360, 'danmaku'], [500, 530, 'user']]);
+  // 100-160 fully ignored; 300-360 overlaps 340-400 by 20/60 = 33 % -> kept, without the ignored part; user 500-530 added
+  assertEquals(segs.map((s) => [s.start, s.end, s.source, s.id]), [[300, 340, 'danmaku', 'd:300-340'], [500, 530, 'user', 'u:500-530']]);
   const user = segs[1];
   assertStrictEquals(user.confidence, 1);
   assertStrictEquals(user.autoSkip, true);
   assertEquals(user.sources, ['user']);
   assertStrictEquals(user.id, 'u:500-530');
-  assertEquals(segs.diagnostics.dropped.length, 1);
-  assertEquals(segs.diagnostics.dropped[0].start, 100);
+  // the ignored estimate and the cut-out part, both listed for the popup's 恢复
+  assertEquals(segs.diagnostics.dropped.map((d) => [d.start, d.end, d.dropReason]), [[100, 160, '用户已忽略'], [340, 360, '用户已忽略']]);
 });
 
 Deno.test('fuse: clipping to [0, duration-1] and dropping segments shorter than 5 s', () => {
@@ -132,11 +132,13 @@ Deno.test('fuse: merging overlaps unions range, keeps max confidence and unions 
     candidates: [danmaku(100, 160, 0.7), danmaku(150, 200, 0.9), danmaku(200, 240, 0.3), danmaku(400, 450, 0.5)],
     duration: 1000, boundaries: [], settings: S,
   });
-  assertEquals(segs.map((s) => [s.start, s.end]), [[100, 240], [400, 450]]);
+  // the two confident estimates join; the weak one merely touching them stays its own (offered) segment
+  assertEquals(segs.map((s) => [s.start, s.end, s.autoSkip]), [[100, 200, true], [200, 240, false], [400, 450, false]]);
   assertStrictEquals(segs[0].confidence, 0.9);
   assertEquals(segs[0].sources, ['danmaku']);
-  assertStrictEquals(segs[0].autoSkip, true);
-  assertStrictEquals(segs[1].autoSkip, false);
+  // two weak ones still join (neither would skip on its own)
+  const weak = BAS.fuse({ candidates: [danmaku(100, 160, 0.3), danmaku(150, 240, 0.4)], duration: 1000, boundaries: [], settings: S });
+  assertEquals(weak.map((s) => [s.start, s.end, s.autoSkip]), [[100, 240, false]]);
 
   const merged = BAS.fuse.mergeOverlaps([
     { start: 50, end: 80, source: 'danmaku', confidence: 0.4, sources: ['danmaku'] },
@@ -178,10 +180,65 @@ Deno.test('fuse: offerOnly merged with a real ad candidate becomes a real ad', (
     candidates: [danmaku(0, 60, 0.5, { offerOnly: true }), danmaku(40, 120, 0.9)],
     duration: 1000, boundaries: [], settings: S,
   });
-  assertEquals(segs.length, 1);
-  assertStrictEquals(segs[0].offerOnly, false);
-  assertStrictEquals(segs[0].confidence, 0.9);
-  assertStrictEquals(segs[0].autoSkip, true);
+  // the overlap is the real ad (auto); the offer's own part before it stays offered, it is not skipped through the merge
+  assertEquals(segs.map((s) => [s.start, s.end, s.autoSkip, !!s.offerOnly]), [[0, 40, false, true], [40, 120, true, false]]);
+  assertStrictEquals(segs[1].confidence, 0.9);
+  assert(segs[1].sources.includes('danmaku') && segs[1].evidence.merged.some((m) => m.start === 40 && m.end === 60));
+  assertEquals(segs[0].evidence.partOf, { start: 0, end: 60 });
+});
+
+Deno.test('fuse: a confident segment leads a merge with a weak one — its range, id, source and reason; the weak parts outside it stay offered', () => {
+  // a weak, long danmaku estimate around a confident model skip (the case that stretched a skip over 3 minutes)
+  const model = danmaku(138, 156, 0.85, { reason: '弹幕/热度模型：广告（97%）', evidence: { bins: { p: 0.97, net: true } } });
+  const weak = danmaku(100, 350, 0.42, { reason: '弹幕 3 条' });
+  const segs = BAS.fuse({ candidates: [weak, model], duration: 1000, boundaries: [], settings: S });
+  assertEquals(segs.map((s) => [s.start, s.end, s.autoSkip]), [[100, 138, false], [138, 156, true], [156, 350, false]]);
+  assertEquals([segs[1].reason, segs[1].id, !!segs[1].evidence.bins], ['弹幕/热度模型：广告（97%）', 'd:138-156', true]);
+  // the representative is the confident one even when the weak one has a higher-priority source and a higher score
+  const offer = { start: 20, end: 140, source: 'subtitle', confidence: 0.95, offerOnly: true, reason: '字幕：口播（62%）' };
+  const s2 = BAS.fuse({ candidates: [offer, danmaku(30, 60, 0.75)], duration: 1000, boundaries: [], settings: S });
+  const auto = s2.filter((s) => s.autoSkip);
+  assertEquals(auto.map((s) => [s.start, s.end, s.source, s.id]), [[30, 60, 'danmaku', 'd:30-60']]);
+  assertEquals(s2.filter((s) => !s.autoSkip).map((s) => [s.start, s.end]), [[20, 30], [60, 140]]);
+});
+
+Deno.test('fuse: what auto-skips never depends on the weak estimates (touching confident segments still join)', () => {
+  const sure = [danmaku(100, 160, 0.8), danmaku(160, 200, 0.7)];
+  const plain = BAS.fuse({ candidates: sure, duration: 1000, boundaries: [], settings: S });
+  for (const w of [danmaku(150, 190, 0.4), danmaku(150, 205, 0.4), { start: 160, end: 170, source: 'heat', confidence: 0.5, offerOnly: true, reason: '热度' }]) {
+    const segs = BAS.fuse({ candidates: sure.concat([w]), duration: 1000, boundaries: [], settings: S });
+    assertEquals(segs.filter((s) => s.autoSkip).map((s) => [s.start, s.end, s.id]), plain.map((s) => [s.start, s.end, s.id]));
+  }
+  assertEquals(BAS.fuse.mergeOverlaps([danmaku(5, 10, 0.8), danmaku(0, 20, 0.4), danmaku(10, 25, 0.8)], 0.6).map((s) => [s.start, s.end]), [[0, 5], [5, 25]]);
+});
+
+Deno.test('fuse: ignored ranges also clip what they only partly cover (a skip undone, a part of a weak estimate ignored)', () => {
+  const model = danmaku(138, 156, 0.85), weak = danmaku(100, 350, 0.42), ad2 = danmaku(300, 330, 0.8);
+  const run = (ignore) => BAS.fuse({ candidates: [weak, model, ad2], duration: 1000, boundaries: [], settings: S, overrides: { ignore } })
+    .map((s) => [s.start, s.end, s.autoSkip]);
+  assertEquals(run([]), [[100, 138, false], [138, 156, true], [156, 300, false], [300, 330, true], [330, 350, false]]);
+  // the model skip undone / ignored: nothing over it, the other ad still skips, the weak estimate's other parts stay offered
+  assertEquals(run([{ start: 138, end: 156 }]), [[100, 138, false], [156, 300, false], [300, 330, true], [330, 350, false]]);
+  // one offered part ignored: it goes, the rest stays
+  assertEquals(run([{ start: 100, end: 138 }]), [[138, 156, true], [156, 300, false], [300, 330, true], [330, 350, false]]);
+  // most of a weak estimate ignored: only that range goes (its other part stays offered), listed for the popup's 恢复
+  const r = BAS.fuse({ candidates: [weak, model], duration: 1000, boundaries: [], settings: S, overrides: { ignore: [{ start: 156, end: 350 }] } });
+  assertEquals(r.map((s) => [s.start, s.end, s.autoSkip]), [[100, 138, false], [138, 156, true]]);
+  assertEquals(r.diagnostics.dropped.filter((d) => d.dropReason === '用户已忽略').map((d) => [d.start, d.end]), [[156, 350]]);
+});
+
+Deno.test('fuse: pieces cut by an ignored range keep ids of their own; a read below minConfidence does not take over danmaku', () => {
+  const ids = (cands, ignore) => BAS.fuse({ candidates: cands, duration: 1000, boundaries: [], settings: S, overrides: { ignore } }).map((s) => [s.start, s.end, s.id]);
+  assertEquals(ids([danmaku(100, 200, 0.9)], [{ start: 140, end: 160 }]), [[100, 140, 'd:100-140'], [160, 200, 'd:160-200']]);
+  // the first piece gone (its start refined to 136): the second keeps its id
+  assertEquals(ids([danmaku(136, 200, 0.9, { lockStart: true, idStart: 100 })], [{ start: 140, end: 160 }]), [[160, 200, 'd:160-200']]);
+  // a weak piece sharing the skip's anchors does not take its id
+  const segs = BAS.fuse({ candidates: [danmaku(104, 160, 0.9, { lockStart: true, idStart: 100, idEnd: 160 }), danmaku(95, 140, 0.4, { idStart: 100, idEnd: 160 })], duration: 1000, boundaries: [], settings: S });
+  assertEquals(segs.filter((s) => s.autoSkip).map((s) => s.id), ['d:100-160']);
+  // minConfidence 0.8: a 0.78 read does not swallow a 0.85 danmaku estimate
+  const S8 = Object.assign({}, S, { minConfidence: 0.8 });
+  const r = BAS.fuse({ candidates: [{ start: 100, end: 200, source: 'subtitle', confidence: 0.78, reason: '字幕：口播' }, danmaku(150, 180, 0.85)], duration: 1000, boundaries: [], settings: S8 });
+  assert(r.some((s) => s.autoSkip && s.start === 150 && s.end === 180), JSON.stringify(r.map((s) => [s.start, s.end, s.source, s.autoSkip])));
 });
 
 Deno.test('fuse: disabled sources are removed', () => {

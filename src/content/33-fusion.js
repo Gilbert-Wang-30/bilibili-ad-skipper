@@ -102,12 +102,41 @@
     return a.start <= b.start ? a : b;
   }
 
-  function mergeTwo(a, b) {
-    const primary = better(a, b);
+  /** Would auto-skip on its own: not offer-only, confidence ≥ minConf (with minConf given). */
+  const sureAt = (c, minConf) => isFinite(minConf) && !c.offerOnly && c.confidence >= minConf;
+  const byStart = (a, b) => a.start - b.start || a.end - b.end;
+  /** [[a, b], …] minus [s, e). */
+  function subtract(pieces, s, e) {
+    const out = [];
+    for (const [a, b] of pieces) {
+      if (e <= a || s >= b) { out.push([a, b]); continue; }
+      if (s > a) out.push([a, s]);
+      if (e < b) out.push([e, b]);
+    }
+    return out;
+  }
+
+  /** [a, b] of candidate c as its own candidate: its id anchors stay on the sides that were not cut, the cut sides
+   *  are anchored where they were cut (so a piece's id does not depend on other pieces). */
+  function pieceOf(c, a, b) {
+    const p = cloneCandidate(c);
+    const a0 = isFinite(c._id0) ? c._id0 : isFinite(c.idStart) ? c.idStart : c.start;
+    const a1 = isFinite(c._id1) && c._id1 !== null ? c._id1 : isFinite(c.idEnd) ? c.idEnd : c.end;
+    p._id0 = a === c.start ? a0 : a; p._id1 = b === c.end ? a1 : b;
+    p.start = a; p.end = b;
+    return p;
+  }
+
+  function mergeTwo(a, b, minConf) {
+    // A segment that would auto-skip on its own leads a merge with one that would not: its range, id, source, reason
+    // and evidence stay (a weak, long danmaku estimate must not stretch a confident read or model skip over content);
+    // the weak one adds its sources and the part of it inside the sure one is recorded in evidence.merged.
+    const sa = sureAt(a, minConf), sb = sureAt(b, minConf), mixed = sa !== sb;
+    const primary = mixed ? (sa ? a : b) : better(a, b);
     const other = primary === a ? b : a;
     const out = Object.assign({}, primary);
-    out.start = Math.min(a.start, b.start);
-    out.end = Math.max(a.end, b.end);
+    out.start = mixed ? primary.start : Math.min(a.start, b.start);
+    out.end = mixed ? primary.end : Math.max(a.end, b.end);
     // An offer-only (intro skip) merged with a real ad candidate is a real ad; confidence from the non-offer side.
     const bothOffer = !!a.offerOnly && !!b.offerOnly;
     if (bothOffer) out.confidence = Math.max(a.confidence, b.confidence);
@@ -116,28 +145,55 @@
     out.sources = primary.sources.slice();
     addSources(out, other.sources);
     out.evidence = Object.assign({}, primary.evidence);
-    out.evidence.merged = (primary.evidence && primary.evidence.merged ? primary.evidence.merged.slice() : [])
-      .concat([{ source: other.source, start: other.start, end: other.end, confidence: other.confidence, reason: other.reason }]);
+    const rec = { source: other.source, start: mixed ? Math.max(other.start, primary.start) : other.start, end: mixed ? Math.min(other.end, primary.end) : other.end, confidence: other.confidence, reason: other.reason };
+    out.evidence.merged = [].concat(primary.evidence && primary.evidence.merged || [], other.evidence && other.evidence.merged || [], [rec]);
     if (other.enabled === false) out.enabled = false;
     return out;
   }
 
-  /**
-   * Merge overlapping (or touching) segments: union range, max confidence, union sources. Sorted by start.
-   * Exposed as BAS.fuse.mergeOverlaps for tests. Input items need numeric start/end.
-   * @param {Array<object>} items
-   * @returns {Array<object>}
-   */
-  function mergeOverlaps(items) {
-    const list = (Array.isArray(items) ? items : []).filter((s) => s && isFinite(s.start) && isFinite(s.end)).map(cloneCandidate)
-      .sort((a, b) => a.start - b.start || a.end - b.end);
+  /** Overlapping (or touching) items joined: union range, max confidence, union sources (mergeTwo). Sorted input. */
+  function unionAll(list, minConf) {
     const out = [];
     for (const s of list) {
       const last = out[out.length - 1];
-      if (last && s.start <= last.end) out[out.length - 1] = mergeTwo(last, s);
+      if (last && s.start <= last.end) out[out.length - 1] = mergeTwo(last, s, minConf);
       else out.push(s);
     }
     return out;
+  }
+
+  /**
+   * Merge overlapping (or touching) segments: union range, max confidence, union sources. Sorted by start. With
+   * minConf, segments that would auto-skip on their own (not offer-only, confidence ≥ minConf) and those that would
+   * not are joined among themselves first; then each sure one takes in the weak ones it really overlaps (mergeTwo: its
+   * range stays), and the weak ones' parts outside every sure one (≥ MIN_SEGMENT_SEC) stay segments of their own
+   * (evidence.partOf = the weak one's range) — offered, never skipped through a merge. So what auto-skips never depends
+   * on the weak estimates. Exposed as BAS.fuse.mergeOverlaps for tests. Input items need numeric start/end.
+   * @param {Array<object>} items
+   * @param {number} [minConf]
+   * @returns {Array<object>}
+   */
+  function mergeOverlaps(items, minConf) {
+    const list = (Array.isArray(items) ? items : []).filter((s) => s && isFinite(s.start) && isFinite(s.end)).map(cloneCandidate).sort(byStart);
+    if (!isFinite(minConf)) return unionAll(list);
+    const out = unionAll(list.filter((c) => sureAt(c, minConf)), minConf), nSure = out.length;
+    for (const w of unionAll(list.filter((c) => !sureAt(c, minConf)), minConf)) {
+      let pieces = [[w.start, w.end]];
+      for (let i = 0; i < nSure; i++) {
+        const s = out[i];
+        if (!(w.start < s.end && s.start < w.end)) continue;
+        out[i] = mergeTwo(s, w, minConf);
+        pieces = subtract(pieces, s.start, s.end);
+      }
+      for (const [a, b] of pieces) {
+        if (b - a < MIN_SEGMENT_SEC) continue;
+        if (a === w.start && b === w.end) { out.push(w); continue; }
+        const part = pieceOf(w, a, b);
+        part.evidence.partOf = { start: w.start, end: w.end };
+        out.push(part);
+      }
+    }
+    return out.sort(byStart);
   }
 
   /**
@@ -217,7 +273,8 @@
     }
     // A transcript read does the same for danmaku estimates around it: a weak or offer-only estimate never lends the
     // read's confidence to a longer span; one that is itself confident and agrees (IoU ≥ 0.5) may widen it.
-    const reads = cands.filter((c) => c.source === 'subtitle' && !c.offerOnly);
+    // reads that would auto-skip on their own (a weaker one must not take over a confident danmaku estimate)
+    const reads = cands.filter((c) => c.source === 'subtitle' && !c.offerOnly && c.confidence >= minConfFuse);
     if (reads.length) {
       const rest = [];
       for (const c of cands) {
@@ -282,12 +339,29 @@
     const ignores = (Array.isArray(overrides.ignore) ? overrides.ignore : [])
       .map((r) => r && { start: num(r.start), end: num(r.end) }).filter((r) => r && isFinite(r.start) && isFinite(r.end) && r.end > r.start);
     if (ignores.length) {
-      cands = cands.filter((c) => {
+      const kept = [], listed = new Set();
+      // an ignored part stays listed (dimmed, restorable from the popup), once per source and range
+      const dropPart = (c, a, b) => {
+        const k = String(c.source)[0] + ':' + Math.round(a) + '-' + Math.round(b);
+        if (listed.has(k)) return;
+        listed.add(k);
+        const p = cloneCandidate(c); p.start = a; p.end = b;
+        drop(p, '用户已忽略');
+      };
+      for (const c of cands) {
         const len = c.end - c.start;
-        const hit = len > 0 && ignores.some((r) => overlap(c.start, c.end, r.start, r.end) / len > IGNORE_FRACTION);
-        if (hit) drop(c, '用户已忽略');
-        return !hit;
-      });
+        // an estimate that would skip on its own and is mostly ignored goes as a whole (its segment would be all of it)
+        if (sureAt(c, minConfFuse) && len > 0 && ignores.some((r) => overlap(c.start, c.end, r.start, r.end) / len > IGNORE_FRACTION)) { dropPart(c, c.start, c.end); continue; }
+        // otherwise the ignored ranges are cut out of it: never skipped or offered inside them
+        let rest = [[c.start, c.end]];
+        for (const r of ignores) rest = subtract(rest, r.start, r.end);
+        if (rest.length === 1 && rest[0][0] === c.start && rest[0][1] === c.end) { kept.push(c); continue; }
+        let cut = [[c.start, c.end]];
+        for (const [a, b] of rest) cut = subtract(cut, a, b);
+        for (const [a, b] of cut) if (b - a >= MIN_SEGMENT_SEC) dropPart(c, a, b);
+        for (const [a, b] of rest) if (b - a >= MIN_SEGMENT_SEC) kept.push(pieceOf(c, a, b));
+      }
+      cands = kept;
     }
     for (const r of Array.isArray(overrides.add) ? overrides.add : []) {
       const a = r && num(r.start), b = r && num(r.end);
@@ -305,7 +379,7 @@
       c.start = round2(start); c.end = round2(end);
       clipped.push(c);
     }
-    const merged = mergeOverlaps(clipped);
+    const merged = mergeOverlaps(clipped, minConfFuse);
 
     // 6. finalize
     const minConf = isFinite(settings.minConfidence) ? settings.minConfidence : BAS.DEFAULT_SETTINGS.minConfidence;
@@ -321,7 +395,8 @@
     });
     // Unique ids even if two segments round to the same bucket (rare, after clipping).
     const seen = new Set();
-    for (const seg of segments) {
+    // segments that auto-skip take their ids first, offered ones get the suffixes (a skip keeps its id whatever is offered near it)
+    for (const seg of segments.filter((x) => x.autoSkip).concat(segments.filter((x) => !x.autoSkip))) {
       let id = seg.id, k = 2;
       while (seen.has(id)) id = seg.id + '#' + k++;
       seg.id = id; seen.add(id);
