@@ -34,6 +34,9 @@
     const t = new Float64Array(n), vocab = new Float64Array(n + 1), endW = new Float64Array(n + 1), ann = new Float64Array(n + 1), soft = new Float64Array(n + 1);
     const cues = [];                    // [posted at, target, weak]
     const D = BAS.detectDanmaku;
+    // bare numbers the viewers also post long after their time are names ('A110'), not weak jump targets
+    const names = BAS.util && BAS.util.nameNumbers ? BAS.util.nameNumbers(list, dur) : new Set();
+    yield;
     for (let i = 0; i < n; i++) {
       const d = list[i];
       t[i] = d.t;
@@ -43,7 +46,7 @@
       endW[i + 1] = endW[i] + (c ? c.endW || 0 : 0);
       ann[i + 1] = ann[i] + (c && c.startClass === 'announce' && !c.negated ? 1 : 0);
       soft[i + 1] = soft[i] + (c && (c.startClass === 'moment' || c.startClass === 'bare' || c.startClass === 'weak') ? 1 : 0);
-      if (c && Array.isArray(c.targets)) for (const x of c.targets) if (x && isFinite(x.target) && !x.poi) cues.push([d.t, +x.target, !!x.weak]);
+      if (c && Array.isArray(c.targets)) for (const x of c.targets) if (x && isFinite(x.target) && !x.poi && !(x.weak && x.fmt === 'number' && names.has(+x.target))) cues.push([d.t, +x.target, !!x.weak]);
       if (i % 1000 === 999) yield;
     }
     yield PAUSE_NOW;

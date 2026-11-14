@@ -6,7 +6,7 @@
  */
 (() => {
   if (window.__BAS_BRIDGE__) return;
-  const VERSION = '4.1.0';
+  const VERSION = '4.2.0';
   const ORIGIN = location.origin;
   const post = (msg, transfer) => {
     try { window.postMessage(Object.assign({ __bas: true }, msg), ORIGIN, transfer || []); } catch (e) { /* ignore */ }

@@ -2,7 +2,7 @@
 (() => {
   if (globalThis.BAS && globalThis.BAS.__loaded) return;
 
-  const VERSION = '4.1.0';
+  const VERSION = '4.2.0';
 
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
@@ -163,8 +163,8 @@
     // Suffixes that turn a 3–4 digit number into a landing meme ('812工程', '0558号列车', '812号登机口').
     numSuffix: /^\s*(?:工程|航班|号|型|列车|班车|次|路|高地|项目|计划|元素|机场|登机口|客机|起火点|折跃点|便利店|局|特工|工|号列车|号航班|号登机口|分局|专案组|情报员|预警机|导航|旅|师|团|营|连)/,
     numPrefix: /(?:坐标|空降|跳伞|空警|东方|通辽|闪击|指路|直达|传送|跳到|快进到|折跃|射击距离|航班|列车|工程|前往|支援|呼叫)\s*$/,
-    // A number glued to a letter is a model / train number ('x300', 'k746', 'a19'); only train-style suffixes rescue it.
-    letterGlued: /[a-z]$/,
+    // A number after a letter is a model / train number ('x300', 'k746', 'a19', 'A 110'); only train-style suffixes rescue it.
+    letterGlued: /[a-z]\s?$/,
     trainSuffix: /^\s*(?:次|号|列车|航班|班车|工程)/,
     // Numbers followed by these units are prices / counts / specs, never times.
     unit: /^\s*(?:%|w\b|k\b|v\b|n\b|a\b|t\b|l\b|s\b|ms\b|m\b|kw|hp|ps|rpm|fps|bar|psi|ml|kcal|cal|°|℃|ω|万|千|百|亿|元|块|人|年|个|本|件|px|p\b|帧|mah|nm|hz|gb|mb|g\b|瓦|牛|伏|安|度|米|公里|km|cm|mm|kg|斤|岁|分辨率|评论|播放|点赞|赞|币|粉|播|像素|倍|张|集|期|楼|层|号房|公斤|毫安|w\s|多\b|左右|以上|以下|余|来个|来块|来人)/i,
@@ -285,6 +285,40 @@
     return out;
   }
 
+  /**
+   * Bare 3–4 digit numbers the viewers keep posting long after the moment they would point at: a jump cue only ever
+   * points forward, and a landing code is thanked soon after its time (thanks / landing danmaku are not counted), so a
+   * number that ≥ 2 danmaku (and ≥ 30 % of those mentioning it) post more than a minute after its time is a name — a car
+   * model ('A110'), a bus line, a score — and never a time in this video. Returns the set of times (s) those numbers
+   * would read as; bare-number weak targets (fmt 'number') at them are dropped by the danmaku detector, the media
+   * features and the skip button. list: [{t, text}].
+   */
+  function nameNumbers(list, duration) {
+    const by = new Map();   // time → {total, late}
+    const dur = isFinite(duration) && duration > 0 ? duration : Infinity;
+    for (const d of Array.isArray(list) ? list : []) {
+      if (!d || typeof d.text !== 'string' || !/\d|[零〇洞一幺二两三四五六七拐八九勾]/.test(d.text)) continue;
+      const sd = cnToDigits(normalizeText(d.text));
+      const landing = /感谢|谢谢|多谢|谢|回来|落地|着陆|降落|成功|到了|工程/.test(sd);
+      const re = /(?<![\d.:])(\d{3,4})(?![\d.:])/g, own = new Set();
+      let m;
+      while ((m = re.exec(sd))) {
+        const str = m[1], mm = +str.slice(0, -2), ss = +str.slice(-2);
+        if (ss >= 60 || (str.length === 3 && mm === 0)) continue;
+        const v = mm * 60 + ss;
+        if (v > dur || own.has(v)) continue;
+        own.add(v);
+        const k = by.get(v) || { total: 0, late: 0 };
+        k.total++;
+        if (+d.t > v + 60 && !landing) k.late++;
+        by.set(v, k);
+      }
+    }
+    const out = new Set();
+    for (const [v, k] of by) if (k.late >= 2 && k.late >= 0.3 * k.total) out.add(v);
+    return out;
+  }
+
   // ---------- tiny event bus ----------
   const listeners = new Map();
   const events = {
@@ -300,7 +334,7 @@
     log, warn, debug,
     state: { settings: Object.assign({}, DEFAULT_SETTINGS) },
     util: { fmtTime, clamp, median, mean, sleep, debounce, throttle, normalizeText, parseTimeMention, overlap, uid,
-      parseChineseNumber, cnToDigits, extractTargets, endZone },
+      parseChineseNumber, cnToDigits, extractTargets, nameNumbers, endZone },
     events,
   };
   globalThis.BAS = BAS;

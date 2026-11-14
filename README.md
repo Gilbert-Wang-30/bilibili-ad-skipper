@@ -13,18 +13,25 @@ Seven independent signals are fused into time segments with a confidence score:
 | Signal | What it uses | Confidence |
 |---|---|---|
 | **Chapters (章节 / 视频看点)** | Uploader chapters from the player API whose title says 广告 / 恰饭 / 赞助 / 推广 / 商单 … | 0.95 |
-| **Crowd marks (小电视空降助手)** | Segments that viewers of [BilibiliSponsorBlock](https://github.com/hanydd/BilibiliSponsorBlock) marked by hand and voted on (downvoted ones are hidden). Where a video has one it is the most precise signal (edges within ~1 s); a disputed mark is only offered. | 0.9 – 0.98 |
-| **AI subtitles (AI 字幕)** | What the uploader says, from the video's AI subtitle file. **No AI service, no API key, nothing sent anywhere:** everything runs on numbers that ship with the extension. A small neural network (2.9 million numbers, stored as 8-bit integers; trained offline on 13 192 crowd-labelled videos) reads every line — its characters, its timing, what the danmaku and the heat curve say at that moment and (v4.1.0) what the danmaku network below makes of that moment — in the context of the whole video, and gives it the probability that it belongs to a sponsor read. A read is where that probability rises and stays high; its edges sit on lines the network is sure of. Each stretch is then scored as a whole (a logistic regression over its statistics, the danmaku around it and the older phrase-weight / boosted-tree line scores, which still ship as inputs and as the fallback). p ≥ 0.75 auto-skips, 0.5 – 0.75 is offered as a button. A video that sells from start to end (more than four auto-skipped reads, or reads over 40 % of it) is only offered. | 0.5 – 0.95 |
-| **Danmaku (弹幕)** | All danmaku of the video (same protobuf API the player uses). Clusters of *ad announcements* (恰饭了, 广告来了, 零帧起手, 感谢金主…), *jump cues* (空降 6:00, 跳伞04:50, 745工程, 坐标609, 向右20下 …) and *landing thanks* (欢迎回来, 空降成功, 感谢609工程 …). The median of agreeing jump targets gives the end; thanks clusters confirm it. For a video **without subtitles**, a small neural network (v4.1.0; trained on 38 345 labelled videos, shipped as 1.1 MB of weights, runs locally; no AI service) reads the danmaku themselves in 3-second steps — what viewers wrote there, plus the same danmaku classes and the heat curve — and finds ads these hand-written rules miss: it auto-skips at p ≥ 0.9 and offers a button from 0.6. | 0.2 – 1.0 |
+| **Crowd marks (小电视空降助手)** | Segments that viewers of [BilibiliSponsorBlock](https://github.com/hanydd/BilibiliSponsorBlock) marked by hand and voted on (downvoted ones are hidden). Where a video has one it is the most precise signal (edges within ~1 s); a disputed mark is only offered, and so is a mark nobody has voted on yet unless one of the detectors below agrees (about one in eight such marks is not an ad). | 0.9 – 0.98 |
+| **AI subtitles (AI 字幕)** | What the uploader says, from the video's AI subtitle file. **No AI service, no API key, nothing sent anywhere:** everything runs on numbers that ship with the extension. A small neural network (2.9 million numbers, stored as 8-bit integers; trained offline on 13 192 crowd-labelled videos) reads every line — its characters, its timing, what the danmaku and the heat curve say at that moment and (v4.1.0) what the danmaku network below makes of that moment — in the context of the whole video, and gives it the probability that it belongs to a sponsor read. A read is where that probability rises and stays high; its edges sit on lines the network is sure of. Each stretch is then scored as a whole (a logistic regression over its statistics, the danmaku around it and the older phrase-weight / boosted-tree line scores, which still ship as inputs and as the fallback). p ≥ 0.75 auto-skips when another kind of evidence agrees (a crowd mark, the danmaku, the heat curve), p ≥ 0.9 on its own; below that it is offered as a button (from 0.5). A video that sells from start to end (more than four auto-skipped reads, or reads over 40 % of it) is only offered. | 0.5 – 0.95 |
+| **Danmaku (弹幕)** | All danmaku of the video (same protobuf API the player uses). Clusters of *ad announcements* (恰饭了, 广告来了, 零帧起手, 感谢金主…), *jump cues* (空降 6:00, 跳伞04:50, 745工程, 坐标609, 向右20下 …) and *landing thanks* (欢迎回来, 空降成功, 感谢609工程 …). The median of agreeing jump targets gives the end; thanks clusters confirm it. For a video **without subtitles**, a small neural network (v4.1.0; trained on 38 345 labelled videos, shipped as 1.1 MB of weights, runs locally; no AI service) reads the danmaku themselves in 3-second steps — what viewers wrote there, plus the same danmaku classes and the heat curve — and finds ads these hand-written rules miss: it auto-skips at p ≥ 0.9 when another kind of evidence agrees, at p ≥ 0.95 on its own, and offers a button from 0.6. Viewers' own coordinate memes ("745冲", "745是好地方") count once several viewers post the same time and viewers then land there (欢迎回来 …). | 0.2 – 1.0 |
 | **Viewer heat (高能进度条)** | The player's own viewer-activity curve (about 100 samples per video, served without login). When many viewers drag past an ad, the curve ramps up across it, peaks at its end and falls off a cliff. A danmaku segment that matches gets +0.2 confidence, which lets thin danmaku (e.g. signed out) still auto-skip. On popular videos it also blocks hand-written danmaku auto-skips that have no 空降 coordinates when the curve shows no skipping (the learned danmaku / heat model's skips are exempt: it already read the curve). Alone, it only offers a manual skip button. | confirmation |
 | **Audio / video look-ahead** | For a likely ad the danmaku cannot confirm on their own (they name an ad but are too few), *before you reach it*, the extension downloads just that stretch (plus 45 s around it) of the video's own lowest-bitrate audio track and its 360p picture, using the byte index every bilibili stream carries (about 4–12 MB per segment, at most 60 MB per video), decodes it in the page (`decodeAudioData`, WebCodecs) and compares the inside with the surroundings. Many sponsored reads are **louder**, **steadier** (narration over music, no pauses) and **brighter** than the video around them. When a segment clearly is, and its danmaku name an ad (恰饭 / 广告 … or landing thanks), it gets +0.25 confidence. That lifts thin-danmaku ads to auto-skip. It also finds the end for danmaku that only announce an ad's start. It never blocks a segment: on crowd-labelled ads a third of the real ones looked no different from their surroundings. | confirmation, open-ended ends |
 | **Live frame cuts** | While the video plays, low-resolution frame differences (and optionally the audio level/spectrum via `captureStream`, never re-routing playback) record hard cuts. Cuts within a few seconds of a boundary that the look-ahead did not already fix snap it to the exact frame. | refinement only |
 
 Rules that keep false positives down (all learned from 50 real videos, see `test/fixtures/expected.json`):
 
-* A segment is **auto-skipped only when confidence ≥ 0.6** (configurable). For a danmaku segment that requires either ≥ 3 viewers agreeing on a landing time, or explicit ad vocabulary **plus** a strong end marker. A lone "跳伞23:36" or story words like 躲过一劫 never auto-skip.
+* A segment is **auto-skipped only when confidence ≥ 0.6** (configurable). For a danmaku segment that requires either ≥ 3 viewers agreeing on a landing time, or explicit ad vocabulary **plus** a strong end marker — and, since v4.2.0, a second kind of evidence unless ≥ 3 coordinates agree. A lone "跳伞23:36" or story words like 躲过一劫 never auto-skip.
 * "打钱 / 商单 / 广子" jokes that are spread over a whole sponsored review, "开屏广告" discussions, "怎么还没广告" anticipation and other negations are ignored.
 * Opening skips ("跳伞04:50" posted at 0:00, "正片2:00", "省流 跳转4:00") are shown as an **offer** (a skip button and a dashed marker) but never skipped automatically.
+* **Two kinds of evidence before an auto-skip (v4.2.0).** A skip happens on its own only when two different kinds of
+  evidence agree (crowd mark, AI subtitles, danmaku, heat curve, chapters), or when its one kind is strong: an uploader
+  chapter, a crowd mark viewers voted for (or a moderator locked), a subtitle read the model is at least 90 % sure of,
+  the danmaku network at least 95 % sure, or three agreeing 空降 coordinates. Anything else is offered as a skip button.
+  Viewer comments can be wrong — a team's sponsor discussed in a racing video (reported by a user), a car model like
+  "A 110" read as 1:10 — so danmaku alone rarely decide; a number written after a letter, or a bare number that viewers
+  keep posting more than a minute after its time, is treated as a name, never as a jump target.
 * Jump targets into the very end of a video (the last 1 %, at least 8 s) are ignored: those are "skip to the end"
   jokes. A segment that ends in the last 3 % (at least 20 s) may be an ad before a short outro, or a joke. It is only
   skipped automatically when the audio/video check strongly confirms it and its danmaku name an ad.
@@ -85,11 +92,12 @@ Rules that keep false positives down (all learned from 50 real videos, see `test
   (dimmed) and in the popup with a **恢复** button.
 * **Manual mode**: a **跳过广告 ▶** button appears instead; click it to skip.
 * **Missed an ad?** Click the **⏭** button in the player's control bar (or 跳过正在播放的广告 in the popup) while the ad
-  plays. It jumps at once, using everything known around that moment, even evidence too weak to auto-skip on, in this
-  order: a segment shown but not skipped; 空降 coordinates posted near now; the sponsor read in the AI subtitles
-  (also a weaker one the detector did not skip); landing danmaku (欢迎回来 / 空降成功); the heat curve; a single
-  coordinate; a chapter boundary at most 20 s ahead. If
-  nothing is found it moves forward 15 s and offers **再前进**. Otherwise the toast offers **撤销** and **记住** (save it
+  plays. It jumps at once and is built never to jump past the ad into the video: it lands a second before the earliest
+  end it can trust — a segment it was sure of, two or more agreeing 空降 coordinates posted near now, or the sponsor read
+  in the AI subtitles (also a weaker one the detector did not skip). Weaker hints (landing danmaku 欢迎回来 / 空降成功,
+  the heat curve, a single coordinate, a segment it was not sure of, a chapter boundary) are only used when they lie
+  within 5 s; otherwise it moves forward 5 s and offers **再前进** — press again while the ad still plays. Otherwise
+  the toast offers **撤销** and **记住** (save it
   as an ad for this video, so it is skipped automatically next time). When the results came from the cache it may wait
   up to 2.5 s for the danmaku / subtitles. An optional media check (off by default, a few seconds and about 5 MB per
   press) measures the end from the video's own audio and picture instead.
@@ -222,6 +230,56 @@ and three opening skips):
 | Skip-button presses at every second inside an ad: landing vs the real end | −2.1 … +0.2 s (687 presses) |
 | Live check on bilibili (v0.4.1, 2026-10-17) | measured ads auto-skipped (ends from the danmaku, e.g. 1.2 s late on BV1jCJs6UE9S); the thin-danmaku ad gets its end from the media; an intro the media calls ad-like stays a button |
 | Cost per suspected segment | 4–12 MB (audio ≈ 66 kbps + 360p video 125–400 kbps depending on the codec), 4–10 s in the background; at most 60 MB per video |
+
+### False skips on what people watch (v4.2.0, 2026-11-13)
+
+Every auto-skip was read by two independent reviewers (a third on disagreement), blind to which detector fired: the
+transcript around it, or the danmaku in it when the video has none. (The reviewers were Claude models, only for this
+evaluation; the extension itself calls no AI service.) The extension's detectors and fusion ran as in the browser, crowd
+marks on (the live BilibiliSponsorBlock marks, or that day's dump for the October videos), with the danmaku XML pool
+instead of the player's own list and without the audio/video check. None of the videos was used for training.
+
+**Independent test** — 325 videos sampled from twelve of that day's category rankings (game, knowledge, tech, cars,
+life, food, sports, film, entertainment, animals, animation, music), collected and judged after the v4.2.0 rules were
+fixed:
+
+| | v4.1.0 | **v4.2.0** |
+|---|---|---|
+| Auto-skips | 48 | 27 |
+| … judged a real ad (paid, or the uploader's own promotion) | 34 | 26 |
+| … judged not an ad | 14 (29 %) | **1 (3.7 %)** |
+| Videos with a false skip | 9 of 325 (2.8 %) | **1 of 325 (0.3 %)** |
+
+Of v4.1.0's 14 false skips, 10 were crowd marks nobody had voted on, laid over vlogs, a car-show walk-through or an
+appliance review. v4.2.0 turned 13 of the 14 into skip buttons, along with 8 real ads. The false skip left is a subtitle
+read (p ≥ 0.9) of a car review's closing remarks about that car.
+
+**Development set** — the 876 popular videos (293 from that day's 热门 / 排行榜, 583 of October) whose judged auto-skips
+the rules were chosen on, so these figures are in-sample:
+
+| | v4.1.0 | **v4.2.0** |
+|---|---|---|
+| Auto-skips / judged a real ad | 114 / 105 | 85 / 84 |
+| … judged content, an intro or an outro / unclear | 7 / 2 | 1 / 0 |
+| … videos with a false or unclear skip | 8 of 876 (0.9 %) | 1 (0.1 %) |
+| Held-out test (375 videos, crowd marks off): ads auto-skipped, XML pool / signed-out danmaku | 81.1 % / 77.8 % | 79.3 % / 75.1 % |
+| … skips outside every crowd mark / content cut | 1 / 110 s | **0 / 81 s** |
+| ⏭ pressed at ¼ / ½ / ¾ of 312 held-out ads (936 presses): first press lands past the end (content skipped) | 8.8 % | **1.3 %** |
+| … pressing until the ad is over: ends within 3 s of it / ever past it | 83.1 % / 14.5 % | **84.3 % / 1.4 %** |
+| … presses per ad | 1.3 | 1.7 |
+
+Where the development set's false skips came from: a crowd mark nobody had voted on, alone (6 of 21 judged not an ad
+or unclear; 5 of those 6 had no transcript and were judged from the danmaku; with a transcript 11 of 12 were ads), and a
+subtitle read alone (3 of 18: a game's intro in a video about that game, an expo walk-through before its sponsored
+part, a game guide). All 71 auto-skips where two kinds of evidence agreed were real ads. Of 160 unvoted crowd marks
+sampled from the labelled corpus and judged the same way, 137 were ads (86 %) — about one in seven is not — and
+checking our own models' weak agreement inside them only raised that to 92 %, so an unvoted mark now needs a detector
+to agree. The cost, with crowd marks on: on the 876, judged ads auto-skipped 105 → 84 (most of the rest are now
+buttons). The ⏭ policy was chosen on the same 936 presses it is measured on; it no longer trusts landing danmaku, the
+heat peak or a blind 15 s step past 5 s (they had landed past the end 28 %, 5 % and 24 % of the time). Not in either
+measurement: the user-reported F1 video where viewers discussing a racing team's sponsor made the danmaku network skip
+(now a button), and memes like "745是好地方" (the rules now learn a video's own coordinate meme when viewers also land
+there).
 
 ### Danmaku / heat network (v4.1.0, 2026-11-12)
 

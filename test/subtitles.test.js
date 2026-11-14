@@ -117,30 +117,34 @@ Deno.test('detectSubtitles: work per line is bounded on files that are not sente
 
 Deno.test('findAdEnd: danmaku targets win over the transcript; the transcript beats landing danmaku, heat and the blind step', () => {
   const subs = D.prepare(VIDEO, 900);
+  const near = (x) => x >= 319 && x <= 326;   // the read's end, a second early
   const r = BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], subtitles: subs });
   assertEquals(r.source, 'subtitle');
-  assert(atEnd(r.end), String(r.end));
-  // landing danmaku posted later (their end would be 338): the read's own end is more often right
+  assert(near(r.end), String(r.end));
+  // landing danmaku posted later (their end would be 338): a hint only; with the read, the read's end
   const landing = [[340, '欢迎回来'], [341, '欢迎回来'], [342, '空降成功']].map(([t, text]) => ({ t, text }));
-  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: landing }).source, 'thanks');
+  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: landing }).source, 'fallback');
   const both = BAS.findAdEnd({ t: 305, duration: 900, danmaku: landing, subtitles: subs });
   assertEquals(both.source, 'subtitle');
-  assert(atEnd(both.end), String(both.end));
+  assert(near(both.end), String(both.end));
   const heat = { usable: true, step: 25, runs: [{ start: 275, end: 350, peakStart: 325, peakEnd: 350, n: 3, ramp: 1, peakFromEnd: 0, ratio: 9, adLike: true }] };
   assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], subtitles: subs, heat }).source, 'subtitle');
-  const dm = [[301, '空降5:25'], [302, '空降 5:25'], [303, '空降5:26']].map(([t, text]) => ({ t, text }));
-  const tg = BAS.findAdEnd({ t: 305, duration: 900, danmaku: dm, subtitles: subs });
-  assertEquals(tg.source, 'targets');
+  // agreeing coordinates and the read: the earlier of the two
+  const late = [[301, '空降5:45'], [302, '空降 5:45'], [303, '空降5:46']].map(([t, text]) => ({ t, text }));
+  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: late, subtitles: subs }).source, 'subtitle');
+  const early = [[301, '空降5:15'], [302, '空降 5:15'], [303, '空降5:16']].map(([t, text]) => ({ t, text }));
+  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: early, subtitles: subs }).source, 'targets');
   assertEquals(BAS.findAdEnd({ t: 600, duration: 900, danmaku: [], subtitles: subs }).source, 'fallback');
   // a read only the subtitle detector found is answered by the subtitle step (its end tables), not as a known candidate;
   // a crowd mark (or anything with another source) still is
   const subOnly = { start: 300, end: 340, source: 'subtitle', sources: ['subtitle'], confidence: 0.5, offerOnly: true };
   const viaRead = BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], subtitles: subs, candidates: [subOnly] });
   assertEquals(viaRead.source, 'subtitle');
-  assert(atEnd(viaRead.end), String(viaRead.end));
-  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], candidates: [subOnly] }).source, 'candidate');   // no transcript at hand
-  const crowd = { start: 300, end: 340, source: 'crowd', sources: ['crowd'], confidence: 0.5 };
-  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], subtitles: subs, candidates: [crowd] }).source, 'candidate');
+  assert(near(viaRead.end), String(viaRead.end));
+  // no transcript at hand: the offered read is not sure enough to trust past a step
+  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], candidates: [subOnly] }).source, 'fallback');
+  const crowd = { start: 300, end: 340, source: 'crowd', sources: ['crowd'], confidence: 0.9 };
+  assertEquals(BAS.findAdEnd({ t: 305, duration: 900, danmaku: [], candidates: [crowd] }).source, 'candidate');
 });
 
 Deno.test('fusion: a transcript read inside a crowd mark corroborates it; alone it is a segment of its own', () => {

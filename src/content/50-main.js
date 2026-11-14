@@ -123,7 +123,8 @@
     const o = Object.assign({}, c);
     const ev = c.evidence || {};
     o.evidence = { targetsAgree: ev.targetsAgree, adVocab: ev.adVocab, strongEnd: ev.strongEnd, mediumEnd: ev.mediumEnd, endZone: ev.endZone,
-      nTargets: Array.isArray(ev.targets) ? ev.targets.length : ev.nTargets, bins: ev.bins, subtitle: ev.subtitle };
+      nTargets: Array.isArray(ev.targets) ? ev.targets.length : ev.nTargets, bins: ev.bins, subtitle: ev.subtitle,
+      crowd: ev.crowd ? { votes: ev.crowd.votes, locked: ev.crowd.locked } : undefined };
     return o;
   };
 
@@ -256,7 +257,7 @@
       if (!r) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
       // Unless the press is inside a segment we already know, measure the end from the video's own audio/picture:
       // on the measured ads this lands within 2.5 s of the real end from anywhere inside the ad.
-      if (r.source !== 'candidate' && skipHereMediaAvailable()) {
+      if (r.trusted === false && skipHereMediaAvailable()) {
         const wait = BAS.ui ? BAS.ui.showToast({ text: '正在分析音视频，寻找广告结尾…', durationMs: AV_SKIP_HERE_MS + 2000, force: true }) : null;
         let f = null;
         try { f = await avFindEnd(info, t, dur); } catch (e) { BAS.debug('skip-here: A/V failed', e); }
@@ -265,14 +266,14 @@
         let nowAv = t;
         try { nowAv = v.currentTime; } catch (e) { /* ignore */ }
         if (f && f.t <= nowAv + 1) { if (BAS.ui) BAS.ui.showToast({ text: '广告已经结束', force: true }); return null; }
-        if (f) r = { end: f.t, start: r.start, source: 'av', reason: '音视频：广告结束处的转场（静音 + 切镜）', evidence: { score: f.score } };
+        if (f) r = { end: f.t, start: r.start, source: 'av', reason: '音视频：广告结束处的转场（静音 + 切镜）', evidence: { score: f.score }, trusted: false };
       }
       // Waiting (danmaku download, A/V analysis) let playback run on: judge the answer against the position now.
       let now = t;
       try { now = v.currentTime; } catch (e) { /* ignore */ }
       if (r.end <= now + 1) {
-        // a real end estimate that is already behind us means the ad is over; only a blind step is recomputed
-        if (r.source !== 'fallback') { if (BAS.ui) BAS.ui.showToast({ text: '广告已经结束', force: true }); return null; }
+        // a trusted end that is already behind us means the ad is over; a short step is recomputed from now
+        if (r.trusted !== false) { if (BAS.ui) BAS.ui.showToast({ text: '广告已经结束', force: true }); return null; }
         const again = BAS.findAdEnd({ t: now, duration: dur, danmaku: list, heat: state.heatAnalysis, boundaries: state.boundaries, candidates: knownSpans(), subtitles: subs, media: subMediaOf(info) });
         if (!again) { if (BAS.ui) BAS.ui.showToast({ text: '已接近视频结尾', force: true }); return null; }
         r = Object.assign({}, again, { start: Math.min(again.start, r.start) });
@@ -281,7 +282,7 @@
       try { v.currentTime = r.end; } catch (e) { return null; }
       BAS.log('skip-here', fmtTime(t), '->', fmtTime(r.end), r.source);
       const actions = [{ label: '撤销', onAction: () => { try { v.currentTime = t; } catch (e) { /* ignore */ } } }];
-      if (r.source === 'fallback') {
+      if (r.trusted === false) {
         actions.push({ label: '再前进', title: '广告还没结束？继续查找结尾', onAction: () => { skipHere(); } });
       } else {
         actions.push({

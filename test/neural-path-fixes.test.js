@@ -47,10 +47,10 @@ Deno.test('findAdEnd: a read only the subtitle detector found keeps its end when
   const subs = Array.from({ length: 200 }, (_, i) => ({ from: 3 * i, to: 3 * i + 2, content: topic[i % topic.length] }));
   const cand = { start: 120, end: 180, source: 'subtitle', sources: ['subtitle'], confidence: 0.5, offerOnly: true, reason: '字幕：口播（62%）' };
   const r = BAS.findAdEnd({ t: 140, duration: 600, danmaku: [], candidates: [cand], subtitles: subs });
-  assertEquals([r.source, r.end], ['subtitle', 180]);
-  // a read the transcript does answer still comes from step 3 (not the candidate)
+  assertEquals([r.source, r.end], ['subtitle', 179]);
+  // without the transcript the offered read is only a hint: a short step
   const r2 = BAS.findAdEnd({ t: 140, duration: 600, danmaku: [], candidates: [cand] });
-  assertEquals([r2.source, r2.end], ['candidate', 180]);
+  assertEquals([r2.source, r2.end], ['fallback', 145]);
 });
 
 Deno.test('mediaRows: unknown danmaku is NaN, a missing heat curve is 0 (as in training), failed danmaku segments are NaN', () => {

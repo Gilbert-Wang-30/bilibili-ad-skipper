@@ -1,5 +1,5 @@
 // Crowd-marked segments (BilibiliSponsorBlock) — 39-detect-crowd.js, the hash-prefix lookup in 22-api.js, fusion.
-import { assert } from './assert.js';
+import { assert, assertEquals } from './assert.js';
 import { loadBAS } from './load.js';
 
 const BAS = loadBAS();
@@ -73,10 +73,12 @@ Deno.test('fusion: a crowd mark absorbs weak or offer-only estimates that touch 
   const mk = (a, b, votes = 0) => BAS.detectCrowd([seg(a, b, { votes, videoDuration: 1200 })], { cid: 111, duration: 1200 }).candidates[0];
   // review cases: an opening offer 0–60 touching a mark 59–85; a weak estimate 81–352.8 touching a mark 57–117
   const offer = { source: 'danmaku', start: 0, end: 60, confidence: 0.5, offerOnly: true, reason: '', evidence: {} };
-  let segs = BAS.buildSegments({ candidates: [mk(59, 85), offer], duration: 1200, settings: S }).segments.filter((x) => x.autoSkip);
+  let segs = BAS.buildSegments({ candidates: [mk(59, 85, 1), offer], duration: 1200, settings: S }).segments.filter((x) => x.autoSkip);
   assert(segs.length === 1 && segs[0].start === 59 && segs[0].end === 85, 'opening offer not merged into an auto-skip from 0:00: ' + JSON.stringify(segs.map((x) => [x.start, x.end])));
+  // a mark nobody voted on, with only an opening offer touching it, is offered, not skipped (v4.2.0 one-source gate)
+  assertEquals(BAS.buildSegments({ candidates: [mk(59, 85), offer], duration: 1200, settings: S }).segments.filter((x) => x.autoSkip).length, 0);
   const weak = { source: 'danmaku', start: 81, end: 352.8, confidence: 0.49, reason: '', evidence: {} };
-  segs = BAS.buildSegments({ candidates: [mk(57.3, 117), weak], duration: 1200, settings: S }).segments.filter((x) => x.autoSkip);
+  segs = BAS.buildSegments({ candidates: [mk(57.3, 117, 1), weak], duration: 1200, settings: S }).segments.filter((x) => x.autoSkip);
   assert(segs.length === 1 && segs[0].start === 57.3 && segs[0].end === 117, 'weak estimate absorbed: ' + JSON.stringify(segs.map((x) => [x.start, x.end])));
   // the +0.05 for agreeing danmaku is applied once, however many estimates merge
   const est = (a, b) => ({ source: 'danmaku', start: a, end: b, confidence: 0.8, reason: '', evidence: {} });

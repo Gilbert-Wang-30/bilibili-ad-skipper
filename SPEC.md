@@ -263,7 +263,7 @@ Step D2 — rules learned from 50 real videos (test/fixtures-full), all MUST be 
   `710工程` ×13 at t≈340 (ad 340→430), `745工程`/`746工程`/`07:45`/`现在是7点46分` at t≈358 (ad 358→465), `坐标609`, `星语庭坐标 449`, `折跃坐标洞四五洞`
   (洞=0, 幺=1, 两=2, 拐=7, 勾=9 → "0450" = 4:50), `右17` / `→右19下` (press → 19 times = 19×5 s relative: target = t + n×5).
   Parse: `(\d)(\d{2})\s*(工程|号|型)?` and bare `\d{1,2}[:.：]\d{2}` → m:ss when ss<60 and the value lies in `(t+5, t+600]`;
-  `(\d{1,2})点(\d{2})分?` → m:ss; `(\d+)(秒|s)后?` with 跳/快进 → relative. A bare number only counts when ≥ 2 danmaku within 15 s agree (±10 s) on the same target, to avoid picking up years/prices.
+  `(\d{1,2})点(\d{2})分?` → m:ss; `(\d+)(秒|s)后?` with 跳/快进 → relative. A bare number only counts when ≥ 2 danmaku within 15 s agree (±10 s) on the same target, to avoid picking up years/prices. A number after a Latin letter, with or without one space ('A110', 'A 110', 'x300'), is a model name, never a target (v4.2.0). `util.nameNumbers(list, duration)`: a 3–4 digit number that ≥ 2 danmaku (and ≥ 30 % of those mentioning it, counted once per danmaku, thanks / landing danmaku not counted) post more than 60 s after the time it would read as is a name in this video ('110' for a car model) — a jump cue only points forward and a landing code is thanked soon after its time — so its bare-number targets (fmt 'number', weak) are dropped by the rules (before R3), by the media features' cue counts (§7.10) and by the skip button (§7.6). R3b (the video's own coordinate meme): a bare-number weak target that ≥ 4 danmaku (≥ 2 different texts) post within 60 s, all before its time, is confirmed when a strong landing marker falls within [time − 5, time + 25] s — without the landing, repeated numbers were highlight references on ad-free videos.
   Phrases that mark the exact ad start (weight 1.0): `零帧起手|丝滑衔接|突然变奏|恭喜接单|恭喜接广|来了来了|要来力|前奏|无缝衔接|无缝切换|变奏|开始了|可以关视频了|润物细无声`.
 * **Strong-end requirement for auto-skip:** a candidate whose end comes only from *medium* thanks (bare 谢谢/好了/回来) is capped at confidence 0.55 — it is shown as a marker but never auto-skipped.
   Only targets (≥ 2 agreeing) or a strong end marker (`欢迎回来|空降成功|着陆|落地|穿越|工程|躲过|逃过|回来了|正片开始|广告结束|恰饭结束`) can push confidence ≥ 0.6.
@@ -323,6 +323,20 @@ Step E — merge overlapping candidates (keep the higher confidence, union the r
    segments that auto-skip their ids first; offered ones take the `#k` suffixes when two round to the same id.
 6. `id = source[0] + ':' + Math.round(start) + '-' + Math.round(end)`; `autoSkip = confidence ≥ settings.minConfidence && !offerOnly`; `enabled = true`.
 
+### 7.4a One-source gate — `BAS.buildSegments` (38-pipeline.js, after fusion)
+
+Judged on the candidates that make up the segment (those of `buildSegments`' input, after heat / A/V, overlapping the
+segment by > 30 % of the shorter one), not on the merged segment's labels. A kind counts when such a candidate would
+auto-skip on its own (not offer-only, confidence ≥ minConfidence) or is a fair sign of it (a subtitle read or network
+stretch with p ≥ 0.5), and the heat curve counts whenever a candidate carries it (a confirmation or a heat offer). Kinds:
+chapter, crowd, subtitle, danmaku, heat — the A/V check is not one (it only runs on a danmaku estimate's request). An
+auto-skip segment keeps `autoSkip` with ≥ 2 kinds, or when one of its sure candidates is strong alone: chapter; crowd
+with `evidence.crowd.votes ≥ 1` or `locked`; subtitle with `evidence.subtitle.p ≥ 0.9`; the danmaku / heat network with
+`evidence.bins.p ≥ 0.95` (the bin trees: any); hand-written danmaku rules with `evidence.targetsAgree ≥ 3`; user
+segments always. Otherwise `autoSkip = false`, `oneSource = true`, reason + ' · 仅单一来源，改为提示' (an offer: the skip
+button). The result cache keeps `evidence.crowd` {votes, locked} so a voted mark still skips alone from the cache. See
+README "False skips on what people watch" for the measurement (thresholds chosen on its development set).
+
 ### 7.5 Viewer heat — `BAS.detectHeat` (34-detect-heat.js)
 
 Source: `GET https://bvc.bilivideo.com/pbp/data?aid=&cid=&bvid=&r=loader` with `credentials:'omit'` (the CORS headers
@@ -353,22 +367,29 @@ Use:
 
 For ads the detectors missed. The viewer presses the control-bar ⏭ button (`.bas-ctrl-skip`, first child of
 `.bpx-player-control-bottom-right`, setting `skipHereButton`) or the popup button (`BAS_SKIP_HERE`). Only the END is
-needed, and weak evidence is acceptable because a human confirmed the ad. Order of trust: an existing segment/candidate
-covering now (any confidence, incl. ignored/dropped) → ≥ 2 agreeing 空降 targets (≥ 3 if bare numbers count) posted in
-[t−150, t+60] → the subtitle read containing now (§7.9 `readEndAt`, incl. a weaker rejected stretch) → landing-marker
-cluster after now → heat ramp containing now (its peak end; a second press past the middle jumps half a sample further)
-→ a single target → a chapter boundary ≤ 20 s
-ahead (a farther one was a median 54 s past the ad's end) → +15 s. When results came from the cache, danmaku (with the
+needed, and weak evidence is acceptable because a human confirmed the ad — but the landing must not pass the ad's end
+(v4.2.0). Trusted ends: an existing segment/candidate covering now that the extension was sure of (not offer-only,
+confidence ≥ `SURE_CONF` 0.6); ≥ 2 agreeing 空降 targets (≥ 3 if bare numbers count; bare numbers that are names in
+this video — `util.nameNumbers` — never count) posted in [t−150, t+60] and pointing more than 1 s ahead; the subtitle read containing now (§7.9
+`readEndAt`, incl. a weaker rejected stretch). The landing is the earliest trusted end − `MARGIN` (1 s), result
+`trusted: true`. Without one (`trusted: false`), the weak hints — a segment it was not sure of, the landing-marker
+cluster after now (its first marker − 2 s), the heat ramp containing now (its peak end; a second press past the middle
+half a sample further), a single target, a chapter boundary ≤ 20 s ahead — are used only when the earliest of them
+lies within `STEP` (5 s); else +5 s (source `fallback`). 50-main.js offers 再前进 for every untrusted answer and
+recomputes one that playback already passed. When results came from the cache, danmaku (with the
 bridge's preloaded segments) and subtitles are loaded with a 2.5 s deadline; the press never waits longer.
-Measured on 936 presses at ¼ / ½ / ¾ of the held-out crowd-labelled ads (v3.0.0, this order, no known segment passed
-in, the read scored with the danmaku / heat as the extension does), within 3 s of the end: targets 89 % (276 presses),
-subtitle read 91 % (387), landing markers 62 % (87, the presses with no read), heat 61 % (23), single target 45 % (11),
-blind step 22 % (152); all together 75 % (60 % without subtitles). With landing markers ahead of the read the read
-answered 210 presses at 90 % and the markers 266 at 73 %; where both answer (181 presses), read 92 % vs markers 78 %,
-which is why the read now comes first (chosen on these presses, the only ones with danmaku collected).
-The toast offers 撤销 (seek back) and 记住 (store `[start estimate, end]` as a user segment). Measured: presses early /
-mid / late in the 7 ads land within 10 s every time (16/21 within 3 s) at full density; with 1/10 of the danmaku 18/21
-within 3 s; with heat only ±17 s.
+Measured on 936 presses at ¼ / ½ / ¾ of the held-out crowd-labelled ads (no known segment passed in, the network
+warmed with the danmaku / heat; test/scratch/merge/button-policy.js replays a viewer pressing again while the ad still
+plays): v4.1.0's order (each source trusted in turn, a 15 s blind step) landed past the end (> 3 s) on 8.8 % of first
+presses — landing markers 28 %, single target 27 %, blind step 24 %, targets 7 %, subtitle read 2 % — and 14.5 %
+pressing until the ad was over. v4.2.0: 1.3 % / 1.4 %, ending within 3 s of the end 84.3 % of the time (83.1 %) after
+1.7 presses (1.3); the policy was chosen on these same presses. Larger margins before the coordinates (2–5 s) did not
+lower it further.
+The toast offers 撤销 (seek back) and 记住 (store `[start estimate, end]` as a user segment). Measured (v4.2.0) on the 7
+frame-measured ads: pressing early / mid / late and again until the ad is over ends within 3 s of the real end 18/21
+times, never more than 6 s past it (one ad's 空降 coordinates point 6 s past its end). A trusted end less than MIN_AHEAD
+s ahead is landed on (or the ad is reported over), never stepped past. The A/V check (skipHereMedia) only answers presses
+without a trusted end, and its answer is not trusted (再前进 offered).
 
 When `skipHereMedia` is on (default off since 0.6.0: the wait was the main complaint, and on 124 crowd-labelled ads the
 media end was within 3 s only 13 % of the time) and the press is not inside a known segment, the media after the press is analysed
@@ -446,6 +467,9 @@ Skipper suppressions after a refinement: a segment the viewer chose to watch (us
 current range; an auto-skip keeps the range it skipped, so an end that moved later is skipped as well.
 
 ### 7.8 Crowd marks — `BAS.detectCrowd` (39-detect-crowd.js), `BAS.api.getCrowdSegments` (22-api.js)
+
+Auto-skip (v4.2.0, `buildSegments` gate, §7.4a): a mark with votes ≥ 1 or locked skips alone; a mark nobody voted on
+(votes 0) skips only when another kind of evidence agrees (merged into the same segment), else it is offered.
 
 Source: BilibiliSponsorBlock (小电视空降助手). `GET https://bsbsb.top/api/skipSegments/<sha256(bvid)[0:4]>?categories=["sponsor"]`
 returns `[{videoID, segments:[{segment:[s,e], cid, UUID, category, actionType, locked, votes, videoDuration}]}]` for every

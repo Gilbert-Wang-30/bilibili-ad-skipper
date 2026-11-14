@@ -240,6 +240,18 @@
     items.sort((a, b) => a.t - b.t);
     D.density = density;
 
+    // ---- R2b: bare numbers the viewers also post long after their time are names ('A110'), never jump targets ----
+    const names = U.nameNumbers ? U.nameNumbers(list, duration) : new Set();
+    if (names.size) {
+      for (const it of items) {
+        const isName = (x) => x.weak && x.fmt === 'number' && names.has(x.target);
+        if (!it.c.targets.some(isName)) continue;
+        it.c.targets = it.c.targets.filter((x) => !isName(x));
+        if (!it.c.targets.length && it.c.startClass === 'jump?') { it.c.startClass = null; it.c.startW = 0; }
+      }
+    }
+    D.nameNumbers = Array.from(names);
+
     // ---- R3: confirm weak targets (≥ 2 other danmaku within 15 s agreeing ±10 s, ≥ 1 of them cued) ----
     // Evaluated against the ORIGINAL weak/cued flags (order-independent, no chaining through freshly confirmed targets),
     // with early exit and a probe cap so a burst of thousands of identical bare numbers stays cheap.
@@ -264,6 +276,30 @@
         for (let j = k - 1, n = 0; !done && j >= 0 && n < R3_MAX_PROBES && it.t - items[tIdx[j]].t <= 15; j--, n++) done = probe(j);
         for (let j = k + 1, n = 0; !done && j < tIdx.length && n < R3_MAX_PROBES && items[tIdx[j]].t - it.t <= 15; j++, n++) done = probe(j);
         if (agree >= 2 && cued >= 1) confirmed.add(tg);
+      }
+    }
+    // ---- R3b: the video's own coordinate meme. Viewers invent new ones ('745是好地方', '745冲', '745走起'): a bare number
+    // that ≥ R3B_MIN danmaku (≥ 2 different texts) post within R3B_WIN s of each other, all before the time it points to,
+    // is that video's coordinate whatever words surround it — when viewers also land there (a strong landing marker
+    // 欢迎回来 / 回来了 … within [time − 5, time + 25] s). Without the landing, repeated numbers were highlight references
+    // on ad-free videos. Names were removed by R2b; years / prices / counts never become targets. ----
+    const R3B_MIN = 4, R3B_WIN = 60;
+    const landTimes = items.filter((x) => x.c.endClass === 'strong').map((x) => x.t);
+    const landsAt = (v) => landTimes.some((x) => x >= v - 5 && x <= v + 25);
+    for (let k = 0; k < tIdx.length; k++) {
+      const it = items[tIdx[k]];
+      for (const tg of it.c.targets) {
+        if (!tg.weak || confirmed.has(tg) || tg.fmt !== 'number' || !landsAt(tg.target)) continue;
+        let n = 1;
+        const texts = new Set([it.c.norm]);
+        const scan = (j) => {
+          const y = items[tIdx[j]];
+          if (y.t >= tg.target) return;
+          if (y.c.targets.some((x) => x.weak && Math.abs(x.target - tg.target) <= TARGET_TOL)) { n++; texts.add(y.c.norm); }
+        };
+        for (let j = k - 1, m = 0; j >= 0 && m < R3_MAX_PROBES && it.t - items[tIdx[j]].t <= R3B_WIN; j--, m++) scan(j);
+        for (let j = k + 1, m = 0; j < tIdx.length && m < R3_MAX_PROBES && items[tIdx[j]].t - it.t <= R3B_WIN; j++, m++) scan(j);
+        if (n >= R3B_MIN && texts.size >= 2) confirmed.add(tg);
       }
     }
     for (const i of tIdx) {
